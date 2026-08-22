@@ -536,19 +536,79 @@ const SCAN = (() => {
       // dark (black plastic, stickerless creases) or all clustered on one
       // colour (white plastic). Random third colours peeking between cells of
       // a cluttered background are neither.
+      let meanCellMax = 0, mc = 0;
+      for (const c of cells) if (c) { meanCellMax += Math.max(c[0], c[1], c[2]); mc++; }
+      meanCellMax /= Math.max(1, mc);
       let seamConsistent = true;
       if (gapCols.length >= 4) {
-        let meanCellMax = 0, mc = 0;
-        for (const c of cells) if (c) { meanCellMax += Math.max(c[0], c[1], c[2]); mc++; }
-        meanCellMax /= Math.max(1, mc);
         const dark = gapCols.filter((g) => Math.max(g[0], g[1], g[2]) < meanCellMax * 0.45).length;
         const med = [0, 1, 2].map((k) => gapCols.map((g) => g[k]).sort((x, y) => x - y)[gapCols.length >> 1]);
         const near = gapCols.filter((g) => l1(g, med) < 60).length;
-        seamConsistent = dark >= gapCols.length * 0.6 || near >= gapCols.length * 0.6;
+        // plastic is unsaturated (black or white): a saturated "seam" colour
+        // is some background showing between scattered objects, not a cube
+        const mx = Math.max(med[0], med[1], med[2]), mn = Math.min(med[0], med[1], med[2]);
+        const plasticLike = mx < meanCellMax * 0.45 || (mx > 0 && (mx - mn) / mx <= 0.45);
+        seamConsistent = dark >= gapCols.length * 0.6 || (near >= gapCols.length * 0.6 && plasticLike);
+      }
+      // gapless stickerless cubes have no seams at all — same-colour tiles
+      // touch invisibly — but their rounded tile corners expose a notch of
+      // dark inner plastic at every interior 4-tile junction that matches
+      // none of the four tiles. A flat mosaic background has flush square
+      // corners: every junction pixel belongs to one of its tiles.
+      let notched = 0, junctions = 0;
+      const notchCols = [];
+      for (let i = 0; i + 1 < n; i++) {
+        for (let j = 0; j + 1 < n; j++) {
+          const c00 = cells[i * n + j], c10 = cells[(i + 1) * n + j];
+          const c01 = cells[i * n + j + 1], c11 = cells[(i + 1) * n + j + 1];
+          if (!c00 || !c10 || !c01 || !c11) continue;
+          junctions++;
+          const jp = at(off(i) + pitch / 2, off(j) + pitch / 2);
+          // a real junction is where four tiles actually meet: its patch must
+          // contain BOTH an alien notch pixel AND pixels matching at least
+          // two distinct adjacent tiles. A patch buried inside some third
+          // background block is all-alien and matches nothing.
+          let worst = 0, wp = null, m00 = 0, m10 = 0, m01 = 0, m11 = 0;
+          // the patch must span past the notch into the surrounding tiles,
+          // whatever the scale — the notch itself grows with the pitch
+          const pr = Math.max(1, Math.round(pitch * 0.22));
+          const x0 = Math.max(0, Math.round(jp[0]) - pr), x1 = Math.min(W - 1, Math.round(jp[0]) + pr);
+          const y0 = Math.max(0, Math.round(jp[1]) - pr), y1 = Math.min(H - 1, Math.round(jp[1]) + pr);
+          for (let yy = y0; yy <= y1; yy++) {
+            for (let xx = x0; xx <= x1; xx++) {
+              const o = (yy * W + xx) * 4;
+              const p = [d[o], d[o + 1], d[o + 2]];
+              const d00 = l1(p, c00), d10 = l1(p, c10), d01 = l1(p, c01), d11 = l1(p, c11);
+              if (d00 < 55) m00 = 1;
+              if (d10 < 55) m10 = 1;
+              if (d01 < 55) m01 = 1;
+              if (d11 < 55) m11 = 1;
+              const m = Math.min(d00, d10, d01, d11);
+              if (m > worst) { worst = m; wp = p; }
+            }
+          }
+          if (worst > 65 && m00 + m10 + m01 + m11 >= 2) { notched++; notchCols.push(wp); }
+        }
+      }
+      // real notches are the cube's inner plastic: all dark, or at least all
+      // one colour. A random third tile of a cluttered background peeking
+      // through a junction is neither.
+      let cornerConsistent = true;
+      if (notchCols.length >= 2) {
+        const dark = notchCols.filter((g) => Math.max(g[0], g[1], g[2]) < meanCellMax * 0.55).length;
+        const med = [0, 1, 2].map((k) => notchCols.map((g) => g[k]).sort((x, y) => x - y)[notchCols.length >> 1]);
+        const near = notchCols.filter((g) => l1(g, med) < 60).length;
+        cornerConsistent = dark >= notchCols.length * 0.75 || near >= notchCols.length * 0.75;
+      } else if (notchCols.length === 1) {
+        // a lone junction (2×2) can't vote on consistency — accept only the
+        // classic dark-plastic notch, not an arbitrary alien colour
+        cornerConsistent = Math.max(notchCols[0][0], notchCols[0][1], notchCols[0][2]) < meanCellMax * 0.55;
       }
       return {
         seam: checked ? seamed / checked : 0,
         seamConsistent,
+        corner: junctions ? notched / junctions : 0,
+        cornerConsistent,
         cubeFrac: cellCnt ? cubeLike / cellCnt : 0,
         repeats: Math.max(0, cellCnt - clusters),
       };
@@ -602,17 +662,23 @@ const SCAN = (() => {
         if (fit.count < minCount) continue;
         if (clean < 2 && fit.count < 4) continue;
         const st = faceStats(fit);
-        if (st.seam < 0.5) continue;               // no sticker gaps: not a cube face
-        if (!st.seamConsistent) continue;          // gaps aren't one plastic colour
+        // physical lattice evidence: sticker seams in one consistent plastic
+        // colour (stickered cubes), OR corner notches at the tile junctions
+        // (gapless stickerless cubes, which have no seams at all)
+        const seamsOK = st.seam >= 0.5 && st.seamConsistent;
+        const cornersOK = st.corner >= 0.5 && st.cornerConsistent;
+        if (!seamsOK && !cornersOK) continue;      // no physical cube evidence
         if (n >= 3 && st.repeats < 2) continue;    // n² cells of ≤6 colours must repeat
-        // more stickers, cleaner seams, cube-palette cells and repeated
+        const evidence = Math.max(seamsOK ? st.seam : 0, st.corner);
+        // more stickers, stronger evidence, cube-palette cells and repeated
         // colours win (a window shifted onto lattice-like background keeps
-        // its count but loses seams, palette and repeats); ties go to the
-        // face nearest the preferred point
-        const score = fit.count * (0.25 + st.seam) * (0.4 + 0.6 * st.cubeFrac)
+        // its count but loses seams/notches, palette and repeats); ties go
+        // to the face nearest the preferred point
+        const score = fit.count * (0.25 + evidence) * (0.4 + 0.6 * st.cubeFrac)
           * (0.7 + 0.075 * Math.min(4, st.repeats))
           - Math.hypot(fit.cx - pref.x, fit.cy - pref.y) / (4 * minDim);
-        accepted.push(Object.assign(fit, { score }));
+        if (opts.debug) fit.st = st;
+        accepted.push(Object.assign(fit, { score, evidence }));
         acceptedAny = true;
         if (!best || score > best.score) best = fit;
       }
@@ -626,13 +692,19 @@ const SCAN = (() => {
       // lattices (tiled walls, mosaics) several incompatible fits score about
       // the same — a confident box in the wrong place captures wrong colours,
       // so prefer "not found" over a coin flip
+      // a strong-evidence best only yields to genuine near-ties; a shaky best
+      // (weak evidence — think lattice-like backgrounds) yields to any solid
+      // rival, because picking between them would be a coin flip
+      const rivalThr = best.evidence >= 0.75 ? 0.88 : 0.7;
       for (const f of accepted) {
-        if (f === best || f.score < best.score * 0.75) continue;
+        if (f === best || f.score < best.score * rivalThr) continue;
+        if (f.evidence < best.evidence - 0.15) continue;
         const apart = Math.hypot(f.cx - best.cx, f.cy - best.cy) > best.size * 0.3
           || f.size < best.size * 0.8 || f.size > best.size * 1.25;
         if (apart) return null;
       }
       delete best.score;
+      delete best.evidence;
       return best;
     }
 
@@ -672,6 +744,11 @@ const SCAN = (() => {
     const c = Math.cos(bb.a), s = Math.sin(bb.a);
     const cx = c * bb.u - s * bb.v, cy = s * bb.u + c * bb.v;
     const size = (bb.w + bb.h) / 2;
+    // even a plain (solved) face shows its lattice: gap lines on stickered
+    // cubes, corner notches on gapless ones. A featureless cube-coloured
+    // rectangle (a box, a book) shows neither — no lock.
+    const st = faceStats({ cx, cy, size, angle: bb.a });
+    if (!(st.seam >= 0.5 && st.seamConsistent) && !(st.corner >= 0.5 && st.cornerConsistent)) return null;
     return { cx, cy, x: cx - size / 2, y: cy - size / 2, size, angle: bb.a, count: 0, total: n * n, single: true };
   }
 
