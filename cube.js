@@ -1808,6 +1808,6 @@ const api = {
   K, solve3Fast,
 };
 if (typeof module !== 'undefined') module.exports = api;
-if (typeof window !== 'undefined') window.Cube = api;
+if (typeof globalThis !== 'undefined') globalThis.Cube = api;
 
 })();

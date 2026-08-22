@@ -1,6 +1,70 @@
 (() => {
   const C = window.Cube;
   const C4 = window.Cube4;
+  // ---- 4×4 fast solver: shipped tables + parallel search workers ----
+  // The table bundle is fetched once in the background (skipping the ~10s
+  // on-device build) and shared with a small worker pool; each worker runs
+  // one portfolio search config and the shortest reduction wins. Every step
+  // degrades gracefully: no DecompressionStream / no Workers / failed fetch
+  // all fall back to the synchronous on-device path.
+  const solver4 = {
+    tablesP: null, pool: null, calls: new Map(), nextId: 1,
+    loadTables() {
+      if (!this.tablesP) {
+        this.tablesP = (window.CubeTables && window.TPR4 && typeof DecompressionStream !== 'undefined')
+          ? window.CubeTables.fetchBundle(`tables/tpr4-v${window.TPR4.TABLES_VERSION}.bin.gz`)
+            .then((b) => (b.version === window.TPR4.TABLES_VERSION ? b.tables : null))
+            .catch(() => null)
+          : Promise.resolve(null);
+        // the main thread imports them too, for the no-worker fallback path
+        this.tablesP.then((t) => { if (t && !window.TPR4.built) window.TPR4.importTables(t); });
+      }
+      return this.tablesP;
+    },
+    call(worker, msg) {
+      return new Promise((resolve, reject) => {
+        const id = this.nextId++;
+        this.calls.set(id, { resolve, reject });
+        worker.postMessage(Object.assign({ id }, msg));
+      });
+    },
+    getPool(n, tables) {
+      if (this.pool) return this.pool;
+      this.pool = [];
+      for (let i = 0; i < n; i++) {
+        const w = new Worker('worker4.js');
+        w.onmessage = (e) => {
+          const c = this.calls.get(e.data.id);
+          if (c) { this.calls.delete(e.data.id); c.resolve(e.data); }
+        };
+        w.onerror = () => {
+          for (const [id, c] of this.calls) { this.calls.delete(id); c.reject(new Error('worker error')); }
+        };
+        if (tables) this.call(w, { t: 'tables', tables });
+        this.pool.push(w);
+      }
+      return this.pool;
+    },
+    async solveFast(state) {
+      if (typeof Worker === 'undefined') return C4.solve4(state, 'fast');
+      try {
+        const TPR4 = window.TPR4;
+        const tables = await this.loadTables();
+        const n = Math.min(TPR4.PORTFOLIO.length, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
+        const pool = this.getPool(n, tables);
+        const reds = await Promise.all(TPR4.PORTFOLIO.slice(0, pool.length).map((cfg, i) =>
+          this.call(pool[i], { t: 'reduce', state, cfg })));
+        let best = null;
+        for (const r of reds) if (r && r.red && (!best || r.red.length < best.length)) best = r.red;
+        if (!best) return C4.solve4(state, 'fast');
+        const fin = await this.call(pool[0], { t: 'finish', state, red: best });
+        return fin && fin.res ? fin.res : C4.solve4(state, 'fast');
+      } catch (_) {
+        return C4.solve4(state, 'fast');   // any worker trouble: solve synchronously
+      }
+    },
+  };
+  solver4.loadTables();
   const COLORS = { U: 'var(--c-U)', D: 'var(--c-D)', F: 'var(--c-F)', B: 'var(--c-B)', R: 'var(--c-R)', L: 'var(--c-L)', X: 'var(--c-X)' };
   const COLOR_NAMES = { U: 'yellow', D: 'white', F: 'green', B: 'blue', R: 'orange', L: 'red', X: 'eraser' };
   const CORNER_SET = new Set(C.CORNER_IDX);
@@ -531,9 +595,7 @@
     if (needsWarmup) {
       const msg = mode === '4'
         ? (method === 'fast'
-          ? (window.TPR4 && !window.TPR4.built
-            ? 'First time: building lookup tables on your device, then searching hard for a short solution — up to ~30 seconds…'
-            : 'Searching hard for a short solution — this takes 10–20 seconds…')
+          ? 'Searching hard for a short solution — a few seconds…'
           : 'Solving — a 4×4 takes a few seconds of thinking…')
         : 'Preparing the fast solver (first time only)…';
       showMsg(msg, 'ok');
@@ -548,7 +610,7 @@
         if (!res.error && !res.alreadySolved) baseState = st.slice();
       } else if (mode === '4') {
         const st = data['4'].paint;
-        res = C4.solve4(st, method === 'fast' ? 'fast' : 'beginner');
+        res = method === 'fast' ? await solver4.solveFast(st) : C4.solve4(st, 'beginner');
         if (!res.error && !res.alreadySolved) baseState = st.slice();
       } else if (mode === '2') {
         const st = data['2'].paint;

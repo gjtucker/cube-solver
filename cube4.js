@@ -5,7 +5,7 @@
 // layer adjacent to that face), each with '', '2', "'" suffixes.
 // Solved scheme is arbitrary (no fixed centers) — derived from the DBL corner.
 
-const C3 = typeof module !== 'undefined' ? require('./cube.js') : window.Cube;
+const C3 = typeof module !== 'undefined' ? require('./cube.js') : globalThis.Cube;
 
 const C4 = (() => {
   const FACES = ['U', 'R', 'F', 'D', 'L', 'B'];
@@ -579,7 +579,7 @@ const C4 = (() => {
       for (let attempt = 0; attempt < 4; attempt++) {
         const p = this.project();
         const res = method === 'fast'
-          ? C3.solve3Fast(p, { timeLimit: 3000, target: 19, minSearch: 900 })
+          ? C3.solve3Fast(p, { timeLimit: 1350, target: 20, minSearch: 350 })
           : C3.solve(p);
         if (!res.error) {
           if (res.alreadySolved) return;
@@ -683,12 +683,14 @@ const C4 = (() => {
 
   // phased fast path: table-guided phased reduction + two-phase 3x3 finish.
   // C4.phasedReducer is registered by the tpr4 module when it loads.
-  function solvePhased(state) {
-    if (!C4.phasedReducer) return null;
+  // pre: an externally computed reduction move list (e.g. from parallel
+  // workers) — skips the reducer and just assembles/finishes the solution
+  function solvePhased(state, pre) {
+    if (!C4.phasedReducer && !pre) return null;
     const probe = new Solver4(state);
     try { probe.deriveScheme(); } catch (e) { return null; }
     const scheme = probe.scheme;
-    const red = C4.phasedReducer(state, scheme);
+    const red = pre && pre.length ? pre : C4.phasedReducer ? C4.phasedReducer(state, scheme) : null;
     if (!red) return null;
     const mid = C4.applyAlg(state, red);
     const rest = finish3x3(mid, scheme, 'fast');
@@ -702,13 +704,13 @@ const C4 = (() => {
     return { moves: red.concat(rest.moves), stages };
   }
 
-  function solve4(state, method) {
+  function solve4(state, method, opts) {
     const errs = validate4(state);
     if (errs.length) return { error: errs.join('; ') };
     if (C4.isSolved(state)) return { moves: [], stages: [], alreadySolved: true };
     let raw = null;
     if (method === 'fast') {
-      try { raw = solvePhased(state); } catch (e) { raw = null; }
+      try { raw = solvePhased(state, opts && opts.reduction); } catch (e) { raw = null; }
       if (raw && !C4.isSolved(C4.applyAlg(state, raw.moves))) raw = null; // safety net
       if (raw && raw.moves.length > 100) {
         // rare long outlier: let the classic pipeline compete
@@ -781,6 +783,6 @@ const C4 = (() => {
 })();
 
 if (typeof module !== 'undefined') module.exports = C4;
-if (typeof window !== 'undefined') window.Cube4 = C4;
+if (typeof globalThis !== 'undefined') globalThis.Cube4 = C4;
 
 })();
