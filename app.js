@@ -807,9 +807,21 @@
     const st = solution.stages.find((s) => moveIndex >= s.start && moveIndex < s.end);
     if (st) {
       const stgEl = document.getElementById('stg' + solution.stages.indexOf(st));
-      const top = stgEl.offsetTop, bot = top + stgEl.offsetHeight;
-      const vTop = stagelistEl.scrollTop, vBot = vTop + stagelistEl.clientHeight;
-      if (top < vTop || bot > vBot) stagelistEl.scrollTo({ top: top - 6, behavior: 'smooth' });
+      if (stagelistEl.scrollHeight > stagelistEl.clientHeight + 4) {
+        // desktop: the stage list scrolls inside its own box
+        const top = stgEl.offsetTop, bot = top + stgEl.offsetHeight;
+        const vTop = stagelistEl.scrollTop, vBot = vTop + stagelistEl.clientHeight;
+        if (top < vTop || bot > vBot) stagelistEl.scrollTo({ top: top - 6, behavior: 'smooth' });
+      } else {
+        // phone: the page scrolls under the pinned cube — keep the active
+        // stage in the visible band between the cube and the bottom edge
+        const stage = document.querySelector('.stage3d');
+        const band0 = (stage ? stage.getBoundingClientRect().bottom : 0) + 60;
+        const r = stgEl.getBoundingClientRect();
+        if (r.top < band0 || r.top > innerHeight - 120) {
+          window.scrollTo({ top: window.scrollY + r.top - band0, behavior: 'smooth' });
+        }
+      }
     }
   }
 
