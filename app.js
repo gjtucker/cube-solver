@@ -21,12 +21,30 @@
       }
       return this.tablesP;
     },
-    call(worker, msg) {
+    // every call has a generous watchdog: a worker that died (script failed
+    // to load, tab reclaimed it) would otherwise leave the promise pending
+    // forever and the solve hung with its button disabled. On timeout or
+    // worker error the pool is torn down so the sync fallback takes over and
+    // the next solve starts fresh.
+    call(worker, msg, timeoutMs) {
       return new Promise((resolve, reject) => {
         const id = this.nextId++;
-        this.calls.set(id, { resolve, reject });
+        const t = setTimeout(() => {
+          if (this.calls.delete(id)) { this.resetPool(); reject(new Error('worker timeout')); }
+        }, timeoutMs || 120000);
+        this.calls.set(id, {
+          resolve: (v) => { clearTimeout(t); resolve(v); },
+          reject: (e) => { clearTimeout(t); reject(e); },
+        });
         worker.postMessage(Object.assign({ id }, msg));
       });
+    },
+    resetPool() {
+      if (this.pool) {
+        for (const w of this.pool) { try { w.terminate(); } catch (_) {} }
+        this.pool = null;
+      }
+      for (const [id, c] of this.calls) { this.calls.delete(id); c.reject(new Error('worker pool reset')); }
     },
     getPool(n, tables) {
       if (this.pool) return this.pool;
@@ -37,10 +55,8 @@
           const c = this.calls.get(e.data.id);
           if (c) { this.calls.delete(e.data.id); c.resolve(e.data); }
         };
-        w.onerror = () => {
-          for (const [id, c] of this.calls) { this.calls.delete(id); c.reject(new Error('worker error')); }
-        };
-        if (tables) this.call(w, { t: 'tables', tables });
+        w.onerror = () => this.resetPool();
+        if (tables) this.call(w, { t: 'tables', tables }).catch(() => {});
         this.pool.push(w);
       }
       return this.pool;
@@ -165,7 +181,15 @@
     } catch (_) { /* storage unavailable (private mode, blocked) — run stateless */ }
   }
   let saveTimer = 0;
-  function saveState() { clearTimeout(saveTimer); saveTimer = setTimeout(saveStateNow, 250); }
+  let dirty = false;    // a tab that never changed anything must never flush on
+  let booted = false;   // pagehide — a stale background tab would clobber a
+                        // fresher tab's save (last-writer-wins store)
+  function saveState() {
+    if (!booted) return;
+    dirty = true;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveStateNow, 250);
+  }
   function loadState() {
     try {
       const s = JSON.parse(localStorage.getItem(STORE_KEY));
@@ -176,14 +200,14 @@
       if (['3', '4', '2', 'm'].includes(s.mode)) mode = s.mode;
       if (s.method === 'fast' || s.method === 'beginner') method = s.method;
       if (typeof s.selColor === 'string') selColor = s.selColor;
-      if (typeof s.selShape === 'number') selShape = s.selShape;
+      if (typeof s.selShape === 'number' || s.selShape === 'X') selShape = s.selShape;
       if (typeof s.speedVal === 'number' && s.speedVal >= 1 && s.speedVal <= 10) speedVal = s.speedVal;
       return s;
     } catch (_) { return null; }
   }
   const savedState = loadState();
-  window.addEventListener('pagehide', saveStateNow);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveStateNow(); });
+  window.addEventListener('pagehide', () => { if (dirty) saveStateNow(); });
+  document.addEventListener('visibilitychange', () => { if (dirty && document.visibilityState === 'hidden') saveStateNow(); });
 
   // ---------- 3D construction ----------
   const cubeEl = document.getElementById('cube');
@@ -722,9 +746,13 @@
     solution = res;
     moveIndex = 0;
     enterPlayback();
-    // 4×4 fast solutions can be refined by a much deeper (~1 min) search
-    btnHarder.style.display = mode === '4' && method === 'fast' && typeof Worker !== 'undefined' ? '' : 'none';
+    updateHarderButton();
   });
+
+  // 4×4 fast solutions can be refined by a much deeper (~1 min) search
+  function updateHarderButton() {
+    btnHarder.style.display = mode === '4' && method === 'fast' && typeof Worker !== 'undefined' ? '' : 'none';
+  }
 
   const btnHarder = document.getElementById('btnHarder');
   btnHarder.addEventListener('click', async () => {
@@ -926,36 +954,37 @@
 
   // ---------- init ----------
   // sync the static markup with any restored state before the first paint
+  // (howto/hint text is already set from the restored mode further up)
   if (savedState) {
     document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
     document.querySelectorAll('.segbtn').forEach((x) => x.classList.toggle('on', x.dataset.method === method));
     document.getElementById('speed').value = speedVal;
-    howtoEl.innerHTML = HOWTO[mode];
-    hint3d.textContent = HINT[mode];
   }
   buildPalette();
   buildCube();
   render();
-  // resume an in-progress solution at the exact move it was left on
+  // resume an in-progress solution at the exact move it was left on.
+  // enterPlayback resets pbState to baseState, so advance it afterwards.
   if (savedState && savedState.playback && savedState.playback.solution
       && Array.isArray(savedState.playback.solution.moves) && Array.isArray(savedState.playback.baseState)) {
     try {
       solution = savedState.playback.solution;
       baseState = savedState.playback.baseState;
       moveIndex = Math.max(0, Math.min(solution.moves.length, savedState.playback.moveIndex | 0));
-      enterPlayback();
+      enterPlayback();   // draws the playback UI at the restored moveIndex
       if (moveIndex > 0) {
+        // enterPlayback reset pbState to the start — advance it and redraw
         pbState = ENG().applyAlg(baseState, solution.moves.slice(0, moveIndex));
         render();
-        updatePlaybackUI();
       }
       showMsg(`Welcome back — resumed at move ${moveIndex} of ${solution.moves.length}.`, 'ok');
-      btnHarder.style.display = mode === '4' && method === 'fast' && typeof Worker !== 'undefined' ? '' : 'none';
+      updateHarderButton();
     } catch (_) {
       exitPlayback();
       render();
     }
   }
+  booted = true;
   window.addEventListener('resize', () => { buildCube(); render(); });
 
   // gentle idle wobble
