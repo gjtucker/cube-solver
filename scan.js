@@ -1031,6 +1031,6 @@ const SCAN = (() => {
 })();
 
 if (typeof module !== 'undefined') module.exports = SCAN;
-if (typeof window !== 'undefined') window.SCAN = SCAN;
+if (typeof globalThis !== 'undefined') globalThis.SCAN = SCAN;
 
 })();

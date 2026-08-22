@@ -13,7 +13,7 @@
 //
 // All tables are generated on-device at first use (~1.4 MB total, no shipped data).
 
-const C4t = typeof module !== 'undefined' ? require('./cube4.js') : window.Cube4;
+const C4t = typeof module !== 'undefined' ? require('./cube4.js') : globalThis.Cube4;
 
 const TPR4 = (() => {
   const C4 = C4t;
@@ -523,6 +523,33 @@ const TPR4 = (() => {
     built = true;
   }
 
+  // ---- shipped tables ----
+  // The slow BFS fills above (~10s on-device) can instead be loaded from a
+  // pre-generated bundle; the cheap structural tables are always rebuilt.
+  const TABLES_VERSION = 1;
+  function exportTables() {
+    buildAll();
+    const out = { dist1, dist2, dist3c, dist3p };
+    for (let a = 0; a < 3; a++) for (let pi = 0; pi < 12; pi++) out[`distJ${a}_${pi}`] = distJ[a][pi];
+    return out;
+  }
+  function importTables(map) {
+    if (built) return false;
+    for (const k of ['dist1', 'dist2', 'dist3c', 'dist3p']) if (!map[k]) return false;
+    for (let a = 0; a < 3; a++) for (let pi = 0; pi < 12; pi++) if (!map[`distJ${a}_${pi}`]) return false;
+    dist1 = map.dist1; dist2 = map.dist2; dist3c = map.dist3c; dist3p = map.dist3p;
+    distJ = [];
+    for (let a = 0; a < 3; a++) {
+      distJ.push([]);
+      for (let pi = 0; pi < 12; pi++) distJ[a].push(map[`distJ${a}_${pi}`]);
+    }
+    buildPhase3Singles();
+    buildWingId();
+    buildTruePairTables();
+    built = true;
+    return true;
+  }
+
   // =============================== solvers ===============================
   const CENTER_STICKER = C4.CENTERS.map((c) => c.idx);
   const CENTER_FACE = C4.CENTERS.map((c) => c.face);
@@ -639,7 +666,7 @@ const TPR4 = (() => {
   }
 
   // ---------- phase 3 in Uint8 code-space (colors as face indices 0..5) ----------
-  const C3 = typeof module !== 'undefined' ? require('./cube.js') : window.Cube;
+  const C3 = typeof module !== 'undefined' ? require('./cube.js') : globalThis.Cube;
   const M3 = { 0: 0, 1: 1, 2: 3 };
   const FACE_CODE = { U: 0, R: 1, F: 2, D: 3, L: 4, B: 5 };
   const CENTER_STICKER8 = Uint16Array.from(C4.CENTERS.map((c) => c.idx));
@@ -697,7 +724,11 @@ const TPR4 = (() => {
   }
   const tmpPairsIdx = new Int8Array(36); // pairKey -> pair index this pass
   const pairA = new Uint8Array(12), pairB = new Uint8Array(12);
-  function score8(s) {
+  // lite mode drops heuristic terms that measured as near-constant on random
+  // phase-3 states (their max plateaus ~7, adding lookups but almost no
+  // ordering signal): lite>=1 skips the pairwise dist3p sweep (~130 lookups),
+  // lite=2 also skips the 36 distJ interlock lookups
+  function score8(s, lite) {
     // centers
     let a0 = 0, a1 = 0, a2 = 0;
     {
@@ -742,19 +773,23 @@ const TPR4 = (() => {
       sumP += sd;
       if (sd > hP) hP = sd;
       // joint interlock lookups: this pair vs each axis's sort state
-      for (let a = 0; a < 3; a++) {
-        const dj = distJ[a][pi][axisRanks[a] * 552 + rp];
-        if (dj > hP) hP = dj;
+      if (lite !== 2) {
+        for (let a = 0; a < 3; a++) {
+          const dj = distJ[a][pi][axisRanks[a] * 552 + rp];
+          if (dj > hP) hP = dj;
+        }
       }
     }
     // joint co-location table still adds pruning power for far-apart pairs
-    for (let i = 0; i < 12; i++) {
-      if (singles[i] === 0) continue;
-      const ai = pairA[i], bi = pairB[i];
-      for (let j = 0; j < 12; j++) {
-        if (j === i) continue;
-        const d = dist3p[rankTuple([ai, bi, pairA[j], pairB[j]])];
-        if (d > hP) hP = d;
+    if (!lite) {
+      for (let i = 0; i < 12; i++) {
+        if (singles[i] === 0) continue;
+        const ai = pairA[i], bi = pairB[i];
+        for (let j = 0; j < 12; j++) {
+          if (j === i) continue;
+          const d = dist3p[rankTuple([ai, bi, pairA[j], pairB[j]])];
+          if (d > hP) hP = d;
+        }
       }
     }
     return { hC, hP, sumP };
@@ -767,6 +802,7 @@ const TPR4 = (() => {
     const w2 = opts.w2 === undefined ? 0.35 : opts.w2;
     const stallLimit = opts.stallLimit || 14;
     const NPOOL = opts.pool || 5;
+    const lite = opts.lite || 0;
     const done8 = (s) => centersExact8(s) && allPaired8(s);
     if (done8(s0)) return { moves: [], done: true };
     let beam = [{ s: s0, moves: [], last: '' }];
@@ -784,7 +820,7 @@ const TPR4 = (() => {
           if (seen.has(h)) continue;
           seen.add(h);
           if (done8(ns)) return { moves: node.moves.concat(mv), done: true };
-          const { hC, hP, sumP } = score8(ns);
+          const { hC, hP, sumP } = score8(ns, lite);
           const g = node.moves.length + 1;
           const rec = { s: ns, moves: node.moves.concat(mv), last: mv[0], v: g + w1 * Math.max(hC, hP) + w2 * sumP };
           const potential = g + 2.5 * hC + 2.2 * sumP;
@@ -840,6 +876,7 @@ const TPR4 = (() => {
     const W = opts.width || 1200;
     const rounds = opts.rounds || 18;
     const w1 = 1.4, w2 = 0.45;
+    const lite = opts.lite || 0;
     const done8 = (s) => centersExact8(s) && allPaired8(s);
     if (done8(s0)) return { moves: [] };
     const hits = [];
@@ -862,7 +899,7 @@ const TPR4 = (() => {
             if (graceEnd < 0) graceEnd = Math.min(rounds, round + 3);
             continue;
           }
-          const { hC, hP, sumP } = score8(ns);
+          const { hC, hP, sumP } = score8(ns, lite);
           cand.push({ s: ns, moves, last: mv[0], v: moves.length + w1 * Math.max(hC, hP) + w2 * sumP });
         }
       }
@@ -918,6 +955,16 @@ const TPR4 = (() => {
     return null;
   }
 
+  // The search portfolio: diverse beam configs whose minima complement each
+  // other (beam basins vary wildly with the scoring weights — on the same
+  // scramble one config may find 30 moves where another finds 70). Run
+  // sequentially via {restarts: PORTFOLIO} or spread across parallel workers.
+  const mkCfg = (w1, w2) => ({
+    lite: 1, width: 470, w1, w2, pool: 8, stallLimit: 17,
+    endgameTries: 1, greedyTries: 2, endgame: { lite: 1, width: 800, rounds: 14 },
+  });
+  const PORTFOLIO = [mkCfg(1.2, 0.35), mkCfg(0.9, 0.5), mkCfg(1.5, 0.25)];
+
   // full phased reduction: returns move list or null.
   function phasedReduce(state, scheme, opts = {}) {
     if (!built) buildAll(opts.progress);
@@ -934,41 +981,54 @@ const TPR4 = (() => {
     }
     if (!bestHead) return null;
     const head = bestHead.moves;
-    // main beam (code-space) collects hand-off candidates
     const s0 = encode96(bestHead.state, scheme);
-    const p3 = phase3Beam8(s0, opts);
-    if (!p3) return null;
-    if (p3.done) return head.concat(p3.moves);
-    // Closers compete: endgame beams and greedy tails from several hand-offs.
-    // Cost includes downstream parity penalties (flip fix ~15, swap fix ~7).
-    let best = null; // {moves, cost}
-    const consider = (moves, endState8) => {
-      const par = wingParity8(endState8);
-      const pll = pllParity8(endState8);
-      const cost = moves.length + (par ? 15 : 0) + (pll ? 7 : 0);
-      if (!best || cost < best.cost) best = { moves, cost };
-    };
-    for (const cand of p3.pool.slice(0, opts.endgameTries || 2)) {
-      const eg = endgameBeam8(cand.s, opts.endgame || {});
-      if (eg) {
-        const moves = head.concat(cand.moves, eg.moves);
-        let es = cand.s;
-        for (const mv of eg.moves) es = apply8(es, mv);
-        consider(moves, es);
+    // one full phase-3 + closer attempt under one search config. Beam search
+    // basins vary wildly with the scoring weights, so phasedReduce can run a
+    // small portfolio of configs (opts.restarts) and keep the shortest.
+    const attempt = (o) => {
+      // main beam (code-space) collects hand-off candidates
+      const p3 = phase3Beam8(s0, o);
+      if (!p3) return null;
+      if (p3.done) return head.concat(p3.moves);
+      // Closers compete: endgame beams and greedy tails from several hand-offs.
+      // Cost includes downstream parity penalties (flip fix ~15, swap fix ~7).
+      let best = null; // {moves, cost}
+      const consider = (moves, endState8) => {
+        const par = wingParity8(endState8);
+        const pll = pllParity8(endState8);
+        const cost = moves.length + (par ? 15 : 0) + (pll ? 7 : 0);
+        if (!best || cost < best.cost) best = { moves, cost };
+      };
+      for (const cand of p3.pool.slice(0, o.endgameTries || 2)) {
+        const eg = endgameBeam8(cand.s, o.endgame || {});
+        if (eg) {
+          const moves = head.concat(cand.moves, eg.moves);
+          let es = cand.s;
+          for (const mv of eg.moves) es = apply8(es, mv);
+          consider(moves, es);
+        }
       }
+      for (const cand of p3.pool.slice(0, o.greedyTries || 4)) {
+        const midState = C4.applyAlg(bestHead.state, cand.moves);
+        const tail = C4.finishReduction(midState, scheme);
+        if (!tail) continue;
+        consider(head.concat(cand.moves, tail.moves), encode96(tail.state, scheme));
+      }
+      return best ? best.moves : null;
+    };
+    const configs = opts.restarts && opts.restarts.length ? opts.restarts : [opts];
+    let out = null;
+    for (const o of configs) {
+      const m = attempt(o);
+      if (m && (!out || m.length < out.length)) out = m;
     }
-    for (const cand of p3.pool.slice(0, opts.greedyTries || 4)) {
-      const midState = C4.applyAlg(bestHead.state, cand.moves);
-      const tail = C4.finishReduction(midState, scheme);
-      if (!tail) continue;
-      consider(head.concat(cand.moves, tail.moves), encode96(tail.state, scheme));
-    }
-    return best ? best.moves : null;
+    return out;
   }
 
   return {
     MOVES36, centerPerm, wingPerm, SET36, SET28, SET24, OUTER18,
-    buildAll, phasedReduce, walkPhase, phase3Beam8, score8, centersExact, encode96, idaStar8,
+    buildAll, exportTables, importTables, TABLES_VERSION, PORTFOLIO,
+    phasedReduce, walkPhase, phase3Beam8, score8, centersExact, encode96, idaStar8,
     classMask24, lrMask16, axisMasks, wingParityOf, phase1Options, endgameBeam8, pllParity8,
     apply8, hash8, centersExact8, allPaired8, wingParity8,
     get built() { return built; },
@@ -982,12 +1042,18 @@ const TPR4 = (() => {
 
 // register as the fast-path reducer for cube4's solver.
 // One retry with different search weights when the first attempt lands long.
+// Sequential fallback (no workers): the whole portfolio back to back, with
+// richer closers — this path is not racing a wall-clock target the way the
+// parallel worker path is, and single configs occasionally wander badly on
+// hard scrambles (the diversity is what caps the outliers). Total time lands
+// around the old on-device baseline (~12s) with far shorter solutions.
 C4t.phasedReducer = (state, scheme) => TPR4.phasedReduce(state, scheme, {
-  width: 500, pool: 8, stallLimit: 20, endgameTries: 2, greedyTries: 3,
-  endgame: { width: 1000, rounds: 16 },
+  restarts: TPR4.PORTFOLIO.map((c) => Object.assign({}, c, {
+    endgameTries: 2, greedyTries: 3, endgame: { lite: 1, width: 1000, rounds: 16 },
+  })),
 });
 
 if (typeof module !== 'undefined') module.exports = TPR4;
-if (typeof window !== 'undefined') window.TPR4 = TPR4;
+if (typeof globalThis !== 'undefined') globalThis.TPR4 = TPR4;
 
 })();

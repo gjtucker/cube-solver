@@ -1,6 +1,70 @@
 (() => {
   const C = window.Cube;
   const C4 = window.Cube4;
+  // ---- 4×4 fast solver: shipped tables + parallel search workers ----
+  // The table bundle is fetched once in the background (skipping the ~10s
+  // on-device build) and shared with a small worker pool; each worker runs
+  // one portfolio search config and the shortest reduction wins. Every step
+  // degrades gracefully: no DecompressionStream / no Workers / failed fetch
+  // all fall back to the synchronous on-device path.
+  const solver4 = {
+    tablesP: null, pool: null, calls: new Map(), nextId: 1,
+    loadTables() {
+      if (!this.tablesP) {
+        this.tablesP = (window.CubeTables && window.TPR4 && typeof DecompressionStream !== 'undefined')
+          ? window.CubeTables.fetchBundle(`tables/tpr4-v${window.TPR4.TABLES_VERSION}.bin.gz`)
+            .then((b) => (b.version === window.TPR4.TABLES_VERSION ? b.tables : null))
+            .catch(() => null)
+          : Promise.resolve(null);
+        // the main thread imports them too, for the no-worker fallback path
+        this.tablesP.then((t) => { if (t && !window.TPR4.built) window.TPR4.importTables(t); });
+      }
+      return this.tablesP;
+    },
+    call(worker, msg) {
+      return new Promise((resolve, reject) => {
+        const id = this.nextId++;
+        this.calls.set(id, { resolve, reject });
+        worker.postMessage(Object.assign({ id }, msg));
+      });
+    },
+    getPool(n, tables) {
+      if (this.pool) return this.pool;
+      this.pool = [];
+      for (let i = 0; i < n; i++) {
+        const w = new Worker('worker4.js');
+        w.onmessage = (e) => {
+          const c = this.calls.get(e.data.id);
+          if (c) { this.calls.delete(e.data.id); c.resolve(e.data); }
+        };
+        w.onerror = () => {
+          for (const [id, c] of this.calls) { this.calls.delete(id); c.reject(new Error('worker error')); }
+        };
+        if (tables) this.call(w, { t: 'tables', tables });
+        this.pool.push(w);
+      }
+      return this.pool;
+    },
+    async solveFast(state) {
+      if (typeof Worker === 'undefined') return C4.solve4(state, 'fast');
+      try {
+        const TPR4 = window.TPR4;
+        const tables = await this.loadTables();
+        const n = Math.min(TPR4.PORTFOLIO.length, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
+        const pool = this.getPool(n, tables);
+        const reds = await Promise.all(TPR4.PORTFOLIO.slice(0, pool.length).map((cfg, i) =>
+          this.call(pool[i], { t: 'reduce', state, cfg })));
+        let best = null;
+        for (const r of reds) if (r && r.red && (!best || r.red.length < best.length)) best = r.red;
+        if (!best) return C4.solve4(state, 'fast');
+        const fin = await this.call(pool[0], { t: 'finish', state, red: best });
+        return fin && fin.res ? fin.res : C4.solve4(state, 'fast');
+      } catch (_) {
+        return C4.solve4(state, 'fast');   // any worker trouble: solve synchronously
+      }
+    },
+  };
+  solver4.loadTables();
   const COLORS = { U: 'var(--c-U)', D: 'var(--c-D)', F: 'var(--c-F)', B: 'var(--c-B)', R: 'var(--c-R)', L: 'var(--c-L)', X: 'var(--c-X)' };
   const COLOR_NAMES = { U: 'yellow', D: 'white', F: 'green', B: 'blue', R: 'orange', L: 'red', X: 'eraser' };
   const CORNER_SET = new Set(C.CORNER_IDX);
@@ -531,9 +595,7 @@
     if (needsWarmup) {
       const msg = mode === '4'
         ? (method === 'fast'
-          ? (window.TPR4 && !window.TPR4.built
-            ? 'First time: building lookup tables on your device, then searching hard for a short solution — up to ~30 seconds…'
-            : 'Searching hard for a short solution — this takes 10–20 seconds…')
+          ? 'Searching hard for a short solution — a few seconds…'
           : 'Solving — a 4×4 takes a few seconds of thinking…')
         : 'Preparing the fast solver (first time only)…';
       showMsg(msg, 'ok');
@@ -548,7 +610,7 @@
         if (!res.error && !res.alreadySolved) baseState = st.slice();
       } else if (mode === '4') {
         const st = data['4'].paint;
-        res = C4.solve4(st, method === 'fast' ? 'fast' : 'beginner');
+        res = method === 'fast' ? await solver4.solveFast(st) : C4.solve4(st, 'beginner');
         if (!res.error && !res.alreadySolved) baseState = st.slice();
       } else if (mode === '2') {
         const st = data['2'].paint;
@@ -760,6 +822,7 @@
     close: document.getElementById('scanClose'),
     manual: document.getElementById('scanManual'),
     usePhoto: document.getElementById('scanUsePhoto'),
+    undo: document.getElementById('scanUndo'),
     mirror: document.getElementById('scanMirror'),
     file: document.getElementById('scanFile'),
     photoStage: document.getElementById('photoStage'),
@@ -786,6 +849,7 @@
     mirror: false, facing: '',      // preview mirrored? (front camera) / camera facing mode
     track: null, frame: 0,          // auto-detected cube square (sample-canvas coords)
     tracker: SCAN.createTracker(),  // temporal smoothing/locking of detections
+    debugUI: /[?&]debug\b/.test(location.search),   // on-screen gate readout
     acc: null, startedAt: 0,        // colour accumulator over the stable streak
   };
 
@@ -801,6 +865,7 @@
     const info = SCAN.stepInfo(scan.scanMode, Math.min(scan.step, 5), { mirror: scan.mirror });
     scanEls.title.textContent = `Face ${Math.min(scan.step + 1, 6)} of 6 — ${info.title}`;
     scanEls.hint.textContent = info.hint;
+    scanEls.undo.style.display = scan.live && scan.step > 0 ? '' : 'none';
   }
 
   async function startScan() {
@@ -1053,21 +1118,35 @@
       const calm = res.cellVar.filter((x) => x < 1100).length >= n * n - 1;
       const bordered = res.borderDarkRatio >= 0.3;
       const sig = labels.join('');
+      // signatures are compared with one cell of tolerance everywhere: real
+      // cameras flicker a borderline sticker between two hues, and one noisy
+      // cell must neither restart the countdown nor count as "the cube moved"
+      const ham = (a, b) => {
+        if (!a || !b || a.length !== b.length) return 99;
+        let d = 0;
+        for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++;
+        return d;
+      };
       // block re-capturing the face we just took until the cube has visibly moved
-      // (a different reading, or the lock dropped); identical faces elsewhere on
-      // the cube are allowed — a 2×2 can genuinely repeat a pattern
+      // (a clearly different reading, or the lock dropped); identical faces
+      // elsewhere on the cube are allowed — a 2×2 can genuinely repeat a pattern
       const lastSig = scan.signatures.length ? scan.signatures[scan.signatures.length - 1] : null;
-      if (lastSig !== null && (sig !== lastSig || !tracked)) scan.movedSinceCapture = true;
-      const dup = lastSig !== null && sig === lastSig && !scan.movedSinceCapture;
+      if (lastSig !== null && (ham(sig, lastSig) > 1 || !tracked)) scan.movedSinceCapture = true;
+      const dup = lastSig !== null && ham(sig, lastSig) <= 1 && !scan.movedSinceCapture;
       // auto-capture only arms while the cube is genuinely locked: a sticker-
       // lattice lock proves the dark gaps by itself, a plain-face lock (solved /
       // single-colour face) still has to show them. The untracked fallback
       // guide square NEVER auto-captures — manual capture covers it.
       const latticeLock = tracked && !scan.track.single;
       const gates = allKnown && calm && !dup && tracked && (latticeLock || bordered);
-      if (sig === scan.lastSig && gates) scan.stable++;
-      else scan.stable = gates ? 1 : 0;
-      scan.lastSig = sig;
+      // scan.lastSig anchors the current stable streak: frames may drift one
+      // cell from the anchor without resetting the countdown
+      if (gates && scan.stable > 0 && ham(sig, scan.lastSig) <= 1) {
+        scan.stable++;
+      } else {
+        scan.stable = gates ? 1 : 0;
+        scan.lastSig = sig;
+      }
       scan.diag = { allKnown, calm, bordered, dup, latticeLock, sig, stable: scan.stable, cellVar: res.cellVar.map(Math.round), borderDark: +res.borderDarkRatio.toFixed(2) };
       // average the sticker colours over the whole stable streak
       if (scan.stable <= 1 || !scan.acc) {
@@ -1101,6 +1180,13 @@
       drawPill(ctx, status, gcx, Math.min(draw.height - 150, gcy + s * 0.72 + 30));
       // stability arc
       const NEED = 10;
+      if (scan.debugUI) {
+        // ?debug: which auto-capture gate is failing right now
+        const b = (x) => (x ? '✓' : '✗');
+        drawPill(ctx,
+          `trk${b(tracked)} lat${b(latticeLock)} known${b(allKnown)} calm${b(calm)} brd${b(bordered)} dup${dup ? '!' : '·'} ${scan.stable}/${NEED}`,
+          gcx, Math.min(draw.height - 118, gcy + s * 0.72 + 62));
+      }
       if (scan.stable > 0 && now >= scan.cooldownUntil) {
         ctx.beginPath();
         ctx.strokeStyle = '#3ddc84';
@@ -1274,6 +1360,7 @@
     drawPhotoStage();
   });
   scanEls.photoConfirm.addEventListener('click', () => {
+    if (performance.now() < scan.cooldownUntil) return;   // debounce double-taps
     const cv = scanEls.photoCanvas;
     const ctx = cv.getContext('2d', { willReadFrequently: true });
     // sample from the bare photo (no overlay)
@@ -1293,9 +1380,23 @@
   });
 
   scanEls.manual.addEventListener('click', () => {
-    // force-capture whatever the grid currently reads
+    // force-capture whatever the grid currently reads. The cooldown doubles
+    // as a debounce: a double-tap must not capture the same face twice.
+    if (performance.now() < scan.cooldownUntil) return;
     const s = sampleCurrent();
     if (s) captureFace(s.res.cells, null);
+  });
+  scanEls.undo.addEventListener('click', () => {
+    // drop the last captured face (a double-tap or a wrong face) and redo it
+    if (!scan.captures.length || scan.step >= 6) return;
+    scan.captures.pop();
+    scan.signatures.pop();
+    scan.step--;
+    scan.stable = 0;
+    scan.acc = null;
+    scan.movedSinceCapture = true;
+    scan.cooldownUntil = performance.now() + 600;
+    updateScanUI();
   });
   scanEls.usePhoto.addEventListener('click', () => {
     if (scan.stream) { for (const t of scan.stream.getTracks()) t.stop(); scan.stream = null; }
