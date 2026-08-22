@@ -535,8 +535,14 @@ const TPR4 = (() => {
   }
   function importTables(map) {
     if (built) return false;
-    for (const k of ['dist1', 'dist2', 'dist3c', 'dist3p']) if (!map[k]) return false;
-    for (let a = 0; a < 3; a++) for (let pi = 0; pi < 12; pi++) if (!map[`distJ${a}_${pi}`]) return false;
+    // exact length checks: a truncated or corrupt bundle must fall back to
+    // building rather than feed the solver garbage distances
+    const want = { dist1: N1, dist2: N2 * 2, dist3c: 70 * 70 * 70, dist3p: N4W };
+    for (const k in want) if (!map[k] || map[k].length !== want[k]) return false;
+    for (let a = 0; a < 3; a++) for (let pi = 0; pi < 12; pi++) {
+      const t = map[`distJ${a}_${pi}`];
+      if (!t || t.length !== 70 * 552) return false;
+    }
     dist1 = map.dist1; dist2 = map.dist2; dist3c = map.dist3c; dist3p = map.dist3p;
     distJ = [];
     for (let a = 0; a < 3; a++) {

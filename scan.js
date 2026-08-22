@@ -613,6 +613,37 @@ const SCAN = (() => {
         repeats: Math.max(0, cellCnt - clusters),
       };
     }
+    // orientation of a blob made of grid-aligned tiles: the rotation that
+    // minimises its bounding box. Colour-heavy faces on gapless cubes merge
+    // most tiles into one polyomino, leaving too few clean singles for a
+    // pair-based angle — but the polyomino's own box is lattice-aligned.
+    function blobAngle(b) {
+      const boundary = [];
+      for (let y = b.miny; y <= b.maxy; y++) {
+        for (let x = b.minx; x <= b.maxx; x++) {
+          if (label[y * W + x] !== b.id) continue;
+          if (x === 0 || y === 0 || x === W - 1 || y === H - 1
+            || label[y * W + x - 1] !== b.id || label[y * W + x + 1] !== b.id
+            || label[(y - 1) * W + x] !== b.id || label[(y + 1) * W + x] !== b.id) boundary.push([x, y]);
+        }
+      }
+      if (boundary.length < 8) return null;
+      let bestA = null, bestArea = Infinity;
+      for (let deg = -45; deg < 45; deg += 1.5) {
+        const a = (deg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+        let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        for (const [x, y] of boundary) {
+          const u = c * x + s * y, v = -s * x + c * y;
+          if (u < x0) x0 = u;
+          if (u > x1) x1 = u;
+          if (v < y0) y0 = v;
+          if (v > y1) y1 = v;
+        }
+        const area = (x1 - x0 + 1) * (y1 - y0 + 1);
+        if (area < bestArea) { bestArea = area; bestA = a; }
+      }
+      return bestA;
+    }
     let best = null;
     const accepted = [];         // every fit that survived the checks, for the ambiguity guard
     const covered = new Map();   // single -> unit area of the seed that already grouped it
@@ -635,12 +666,13 @@ const SCAN = (() => {
         return ratio > 1.5 && ratio < n * n * 1.3 && near(b);
       });
       if (merged.length) {
-        // lattice angle from the clean stickers; a 2×2 may also read it off a
-        // lone L-shaped block of three (its axes sit 45° from the block's long axis)
+        // lattice angle from the clean stickers; when a colour-heavy face has
+        // merged most tiles into one block, read the angle off that block's
+        // own lattice-aligned bounding box instead
         let ang = clean >= 2 ? latticeAngle(pts, pitch0) : null;
-        if (ang === null && n === 2 && clean === 1 && merged.length === 1) {
-          const b = merged[0];
-          if (b.elong > 1.3 && b.elong < 1.75 && b.compact < 0.92) ang = b.phi + Math.PI / 4;
+        if (ang === null) {
+          const big = merged.reduce((m, x) => (x.area > m.area ? x : m), merged[0]);
+          ang = blobAngle(big);
         }
         if (ang !== null) {
           for (const b of merged) {
@@ -654,7 +686,7 @@ const SCAN = (() => {
         }
       }
       if (pts.length < minCount) continue;
-      if (clean < 2 && !(n === 2 && pts.length === 4)) continue;   // split cells alone are not evidence
+      if (n === 2 && clean < 2 && pts.length !== 4) continue;   // a lone 2×2 needs the full square
       const fits = fitLattice(pts, pitch0, [seed.cx, seed.cy]) || [];
       if (opts.debug) opts.debug.fits.push({ seed: [seed.cx, seed.cy, seed.area], pts, fit: fits[0] || null });
       let acceptedAny = false;

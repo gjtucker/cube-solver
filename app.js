@@ -21,12 +21,30 @@
       }
       return this.tablesP;
     },
-    call(worker, msg) {
+    // every call has a generous watchdog: a worker that died (script failed
+    // to load, tab reclaimed it) would otherwise leave the promise pending
+    // forever and the solve hung with its button disabled. On timeout or
+    // worker error the pool is torn down so the sync fallback takes over and
+    // the next solve starts fresh.
+    call(worker, msg, timeoutMs) {
       return new Promise((resolve, reject) => {
         const id = this.nextId++;
-        this.calls.set(id, { resolve, reject });
+        const t = setTimeout(() => {
+          if (this.calls.delete(id)) { this.resetPool(); reject(new Error('worker timeout')); }
+        }, timeoutMs || 120000);
+        this.calls.set(id, {
+          resolve: (v) => { clearTimeout(t); resolve(v); },
+          reject: (e) => { clearTimeout(t); reject(e); },
+        });
         worker.postMessage(Object.assign({ id }, msg));
       });
+    },
+    resetPool() {
+      if (this.pool) {
+        for (const w of this.pool) { try { w.terminate(); } catch (_) {} }
+        this.pool = null;
+      }
+      for (const [id, c] of this.calls) { this.calls.delete(id); c.reject(new Error('worker pool reset')); }
     },
     getPool(n, tables) {
       if (this.pool) return this.pool;
@@ -37,10 +55,8 @@
           const c = this.calls.get(e.data.id);
           if (c) { this.calls.delete(e.data.id); c.resolve(e.data); }
         };
-        w.onerror = () => {
-          for (const [id, c] of this.calls) { this.calls.delete(id); c.reject(new Error('worker error')); }
-        };
-        if (tables) this.call(w, { t: 'tables', tables });
+        w.onerror = () => this.resetPool();
+        if (tables) this.call(w, { t: 'tables', tables }).catch(() => {});
         this.pool.push(w);
       }
       return this.pool;
@@ -165,7 +181,15 @@
     } catch (_) { /* storage unavailable (private mode, blocked) — run stateless */ }
   }
   let saveTimer = 0;
-  function saveState() { clearTimeout(saveTimer); saveTimer = setTimeout(saveStateNow, 250); }
+  let dirty = false;    // a tab that never changed anything must never flush on
+  let booted = false;   // pagehide — a stale background tab would clobber a
+                        // fresher tab's save (last-writer-wins store)
+  function saveState() {
+    if (!booted) return;
+    dirty = true;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveStateNow, 250);
+  }
   function loadState() {
     try {
       const s = JSON.parse(localStorage.getItem(STORE_KEY));
@@ -176,14 +200,14 @@
       if (['3', '4', '2', 'm'].includes(s.mode)) mode = s.mode;
       if (s.method === 'fast' || s.method === 'beginner') method = s.method;
       if (typeof s.selColor === 'string') selColor = s.selColor;
-      if (typeof s.selShape === 'number') selShape = s.selShape;
+      if (typeof s.selShape === 'number' || s.selShape === 'X') selShape = s.selShape;
       if (typeof s.speedVal === 'number' && s.speedVal >= 1 && s.speedVal <= 10) speedVal = s.speedVal;
       return s;
     } catch (_) { return null; }
   }
   const savedState = loadState();
-  window.addEventListener('pagehide', saveStateNow);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveStateNow(); });
+  window.addEventListener('pagehide', () => { if (dirty) saveStateNow(); });
+  document.addEventListener('visibilitychange', () => { if (dirty && document.visibilityState === 'hidden') saveStateNow(); });
 
   // ---------- 3D construction ----------
   const cubeEl = document.getElementById('cube');
@@ -722,9 +746,13 @@
     solution = res;
     moveIndex = 0;
     enterPlayback();
-    // 4×4 fast solutions can be refined by a much deeper (~1 min) search
-    btnHarder.style.display = mode === '4' && method === 'fast' && typeof Worker !== 'undefined' ? '' : 'none';
+    updateHarderButton();
   });
+
+  // 4×4 fast solutions can be refined by a much deeper (~1 min) search
+  function updateHarderButton() {
+    btnHarder.style.display = mode === '4' && method === 'fast' && typeof Worker !== 'undefined' ? '' : 'none';
+  }
 
   const btnHarder = document.getElementById('btnHarder');
   btnHarder.addEventListener('click', async () => {
@@ -926,36 +954,37 @@
 
   // ---------- init ----------
   // sync the static markup with any restored state before the first paint
+  // (howto/hint text is already set from the restored mode further up)
   if (savedState) {
     document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
     document.querySelectorAll('.segbtn').forEach((x) => x.classList.toggle('on', x.dataset.method === method));
     document.getElementById('speed').value = speedVal;
-    howtoEl.innerHTML = HOWTO[mode];
-    hint3d.textContent = HINT[mode];
   }
   buildPalette();
   buildCube();
   render();
-  // resume an in-progress solution at the exact move it was left on
+  // resume an in-progress solution at the exact move it was left on.
+  // enterPlayback resets pbState to baseState, so advance it afterwards.
   if (savedState && savedState.playback && savedState.playback.solution
       && Array.isArray(savedState.playback.solution.moves) && Array.isArray(savedState.playback.baseState)) {
     try {
       solution = savedState.playback.solution;
       baseState = savedState.playback.baseState;
       moveIndex = Math.max(0, Math.min(solution.moves.length, savedState.playback.moveIndex | 0));
-      enterPlayback();
+      enterPlayback();   // draws the playback UI at the restored moveIndex
       if (moveIndex > 0) {
+        // enterPlayback reset pbState to the start — advance it and redraw
         pbState = ENG().applyAlg(baseState, solution.moves.slice(0, moveIndex));
         render();
-        updatePlaybackUI();
       }
       showMsg(`Welcome back — resumed at move ${moveIndex} of ${solution.moves.length}.`, 'ok');
-      btnHarder.style.display = mode === '4' && method === 'fast' && typeof Worker !== 'undefined' ? '' : 'none';
+      updateHarderButton();
     } catch (_) {
       exitPlayback();
       render();
     }
   }
+  booted = true;
   window.addEventListener('resize', () => { buildCube(); render(); });
 
   // gentle idle wobble
@@ -1289,17 +1318,30 @@
         return d;
       };
       // block re-capturing the face we just took until the cube has visibly moved
-      // (a clearly different reading, or the lock dropped); identical faces
-      // elsewhere on the cube are allowed — a 2×2 can genuinely repeat a pattern
+      // (a clearly different reading, or the lock dropped)
       const lastSig = scan.signatures.length ? scan.signatures[scan.signatures.length - 1] : null;
       if (lastSig !== null && (ham(sig, lastSig) > 1 || !tracked)) scan.movedSinceCapture = true;
-      const dup = lastSig !== null && ham(sig, lastSig) <= 1 && !scan.movedSinceCapture;
+      // on a 3×3/4×4 every face is captured exactly once, so a reading that
+      // matches ANY earlier capture is a re-show of a face already taken —
+      // block it however the cube moved in between. (A 2×2 can genuinely
+      // repeat a pattern, so there only the just-captured face is blocked.)
+      const dup = n >= 3
+        ? scan.signatures.some((prev) => ham(sig, prev) <= 1)
+        : lastSig !== null && ham(sig, lastSig) <= 1 && !scan.movedSinceCapture;
+      // the 3×3 protocol dictates which centre each step shows (green, orange,
+      // blue, red, yellow, white) — refuse to auto-capture a face whose centre
+      // reads as a different colour. Red/orange are lenient with each other
+      // (warm light blurs them; the global colour assignment sorts that out).
+      const expected = n === 3 ? scanFaceLabel(Math.min(scan.step, 5)) : null;
+      const centerRead = n === 3 ? labels[4] : null;
+      const centerOK = !expected || centerRead === expected
+        || ('RL'.includes(expected) && 'RL'.includes(centerRead));
       // auto-capture only arms while the cube is genuinely locked: a sticker-
       // lattice lock proves the dark gaps by itself, a plain-face lock (solved /
       // single-colour face) still has to show them. The untracked fallback
       // guide square NEVER auto-captures — manual capture covers it.
       const latticeLock = tracked && !scan.track.single;
-      const gates = allKnown && calm && !dup && tracked && (latticeLock || bordered);
+      const gates = allKnown && calm && !dup && centerOK && tracked && (latticeLock || bordered);
       // scan.lastSig anchors the current stable streak: frames may drift one
       // cell from the anchor without resetting the countdown
       if (gates && scan.stable > 0 && ham(sig, scan.lastSig) <= 1) {
@@ -1308,7 +1350,7 @@
         scan.stable = gates ? 1 : 0;
         scan.lastSig = sig;
       }
-      scan.diag = { allKnown, calm, bordered, dup, latticeLock, sig, stable: scan.stable, cellVar: res.cellVar.map(Math.round), borderDark: +res.borderDarkRatio.toFixed(2) };
+      scan.diag = { allKnown, calm, bordered, dup, centerOK, latticeLock, sig, stable: scan.stable, cellVar: res.cellVar.map(Math.round), borderDark: +res.borderDarkRatio.toFixed(2) };
       // average the sticker colours over the whole stable streak
       if (scan.stable <= 1 || !scan.acc) {
         scan.acc = { sum: res.cells.map((c) => c.slice()), n: 1 };
@@ -1319,7 +1361,9 @@
       const info = SCAN.stepInfo(scan.scanMode, Math.min(scan.step, 5), { mirror: scan.mirror });
       const hint = dup && allKnown && calm
         ? 'This looks like a face you already scanned — move on to the next one.'
-        : info.hint;
+        : !centerOK && allKnown && calm && tracked
+          ? `That looks like the ${COLOR_NAMES[centerRead]} face — show the ${COLOR_NAMES[expected]} one now (or use Capture now to override).`
+          : info.hint;
       if (scanEls.hint.textContent !== hint) scanEls.hint.textContent = hint;
       // overlay: dim outside the square, grid, status
       const g = sampleToScreen(rect, fr.f);
@@ -1345,7 +1389,7 @@
         // ?debug: which auto-capture gate is failing right now
         const b = (x) => (x ? '✓' : '✗');
         drawPill(ctx,
-          `trk${b(tracked)} lat${b(latticeLock)} known${b(allKnown)} calm${b(calm)} brd${b(bordered)} dup${dup ? '!' : '·'} ${scan.stable}/${NEED}`,
+          `trk${b(tracked)} lat${b(latticeLock)} known${b(allKnown)} calm${b(calm)} brd${b(bordered)} ctr${b(centerOK)} dup${dup ? '!' : '·'} ${scan.stable}/${NEED}`,
           gcx, Math.min(draw.height - 118, gcy + s * 0.72 + 62));
       }
       if (scan.stable > 0 && now >= scan.cooldownUntil) {
