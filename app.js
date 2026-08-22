@@ -1318,17 +1318,30 @@
         return d;
       };
       // block re-capturing the face we just took until the cube has visibly moved
-      // (a clearly different reading, or the lock dropped); identical faces
-      // elsewhere on the cube are allowed — a 2×2 can genuinely repeat a pattern
+      // (a clearly different reading, or the lock dropped)
       const lastSig = scan.signatures.length ? scan.signatures[scan.signatures.length - 1] : null;
       if (lastSig !== null && (ham(sig, lastSig) > 1 || !tracked)) scan.movedSinceCapture = true;
-      const dup = lastSig !== null && ham(sig, lastSig) <= 1 && !scan.movedSinceCapture;
+      // on a 3×3/4×4 every face is captured exactly once, so a reading that
+      // matches ANY earlier capture is a re-show of a face already taken —
+      // block it however the cube moved in between. (A 2×2 can genuinely
+      // repeat a pattern, so there only the just-captured face is blocked.)
+      const dup = n >= 3
+        ? scan.signatures.some((prev) => ham(sig, prev) <= 1)
+        : lastSig !== null && ham(sig, lastSig) <= 1 && !scan.movedSinceCapture;
+      // the 3×3 protocol dictates which centre each step shows (green, orange,
+      // blue, red, yellow, white) — refuse to auto-capture a face whose centre
+      // reads as a different colour. Red/orange are lenient with each other
+      // (warm light blurs them; the global colour assignment sorts that out).
+      const expected = n === 3 ? scanFaceLabel(Math.min(scan.step, 5)) : null;
+      const centerRead = n === 3 ? labels[4] : null;
+      const centerOK = !expected || centerRead === expected
+        || ('RL'.includes(expected) && 'RL'.includes(centerRead));
       // auto-capture only arms while the cube is genuinely locked: a sticker-
       // lattice lock proves the dark gaps by itself, a plain-face lock (solved /
       // single-colour face) still has to show them. The untracked fallback
       // guide square NEVER auto-captures — manual capture covers it.
       const latticeLock = tracked && !scan.track.single;
-      const gates = allKnown && calm && !dup && tracked && (latticeLock || bordered);
+      const gates = allKnown && calm && !dup && centerOK && tracked && (latticeLock || bordered);
       // scan.lastSig anchors the current stable streak: frames may drift one
       // cell from the anchor without resetting the countdown
       if (gates && scan.stable > 0 && ham(sig, scan.lastSig) <= 1) {
@@ -1337,7 +1350,7 @@
         scan.stable = gates ? 1 : 0;
         scan.lastSig = sig;
       }
-      scan.diag = { allKnown, calm, bordered, dup, latticeLock, sig, stable: scan.stable, cellVar: res.cellVar.map(Math.round), borderDark: +res.borderDarkRatio.toFixed(2) };
+      scan.diag = { allKnown, calm, bordered, dup, centerOK, latticeLock, sig, stable: scan.stable, cellVar: res.cellVar.map(Math.round), borderDark: +res.borderDarkRatio.toFixed(2) };
       // average the sticker colours over the whole stable streak
       if (scan.stable <= 1 || !scan.acc) {
         scan.acc = { sum: res.cells.map((c) => c.slice()), n: 1 };
@@ -1348,7 +1361,9 @@
       const info = SCAN.stepInfo(scan.scanMode, Math.min(scan.step, 5), { mirror: scan.mirror });
       const hint = dup && allKnown && calm
         ? 'This looks like a face you already scanned — move on to the next one.'
-        : info.hint;
+        : !centerOK && allKnown && calm && tracked
+          ? `That looks like the ${COLOR_NAMES[centerRead]} face — show the ${COLOR_NAMES[expected]} one now (or use Capture now to override).`
+          : info.hint;
       if (scanEls.hint.textContent !== hint) scanEls.hint.textContent = hint;
       // overlay: dim outside the square, grid, status
       const g = sampleToScreen(rect, fr.f);
@@ -1374,7 +1389,7 @@
         // ?debug: which auto-capture gate is failing right now
         const b = (x) => (x ? '✓' : '✗');
         drawPill(ctx,
-          `trk${b(tracked)} lat${b(latticeLock)} known${b(allKnown)} calm${b(calm)} brd${b(bordered)} dup${dup ? '!' : '·'} ${scan.stable}/${NEED}`,
+          `trk${b(tracked)} lat${b(latticeLock)} known${b(allKnown)} calm${b(calm)} brd${b(bordered)} ctr${b(centerOK)} dup${dup ? '!' : '·'} ${scan.stable}/${NEED}`,
           gcx, Math.min(draw.height - 118, gcy + s * 0.72 + 62));
       }
       if (scan.stable > 0 && now >= scan.cooldownUntil) {

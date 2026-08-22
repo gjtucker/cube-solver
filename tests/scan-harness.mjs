@@ -159,6 +159,18 @@ function randomFace(n, rand, solved) {
   if (solved) {
     const l = LETTERS[Math.floor(rand() * 6)];
     for (let i = 0; i < n * n; i++) face.push(l);
+  } else if (rand() < 0.4 && n >= 3) {
+    // colour-heavy face: one colour dominates (5-7 of 9 on a 3×3) — common on
+    // real scrambles and the hard case for gapless cubes, where same-colour
+    // neighbouring tiles merge into one big blob
+    const dom = LETTERS[Math.floor(rand() * 6)];
+    const k = n * n - 2 - Math.floor(rand() * 3);
+    for (let i = 0; i < n * n; i++) face.push(dom);
+    let placed = 0;
+    while (placed < n * n - k) {
+      const i = Math.floor(rand() * n * n);
+      if (face[i] === dom) { face[i] = LETTERS[Math.floor(rand() * 6)]; placed++; }
+    }
   } else {
     for (let i = 0; i < n * n; i++) face.push(LETTERS[Math.floor(rand() * 6)]);
   }
@@ -349,6 +361,13 @@ if (asJson) {
     ['by background', (s) => s.background],
     ['by cube size', (s) => s.n + 'x' + s.n],
     ['by cube style', (s) => s.style],
+    ['by face mix', (s) => {
+      if (s.solved) return 'solved';
+      const c = {};
+      let m = 0;
+      for (const l of s.face) { c[l] = (c[l] || 0) + 1; if (c[l] > m) m = c[l]; }
+      return m >= s.n * s.n * 0.55 ? s.style + ':heavy' : s.style + ':mixed';
+    }],
     ['solved faces', (s) => (s.solved ? 'solved' : 'mixed')],
   ];
   for (const [name, fn] of dims) {
