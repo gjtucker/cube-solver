@@ -22,7 +22,7 @@ onmessage = (e) => {
       const red = TPR4.phasedReduce(m.state, probe.scheme, m.cfg);
       postMessage({ id: m.id, red });
     } else if (m.t === 'finish') {
-      postMessage({ id: m.id, res: C4.solve4(m.state, 'fast', { reduction: m.red }) });
+      postMessage({ id: m.id, res: C4.solve4(m.state, 'fast', { reduction: m.red, budget3: m.budget3 }) });
     }
   } catch (err) {
     postMessage({ id: m.id, error: String(err && err.message || err) });

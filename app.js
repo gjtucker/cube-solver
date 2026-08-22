@@ -45,6 +45,48 @@
       }
       return this.pool;
     },
+    // run tasks over the pool, each worker pulling the next when free
+    async mapPool(pool, items, makeMsg, onProgress) {
+      let next = 0, done = 0;
+      const out = new Array(items.length);
+      await Promise.all(pool.map(async (w) => {
+        while (next < items.length) {
+          const i = next++;
+          out[i] = await this.call(w, makeMsg(items[i]));
+          done++;
+          if (onProgress) onProgress(done, items.length);
+        }
+      }));
+      return out;
+    },
+    // "Search harder": the deep portfolio queued over the pool, then the top
+    // distinct reductions each get their own generous 3×3 finish; shortest
+    // total wins. ~30-60s. Returns null if workers are unavailable.
+    async solveHard(state, onProgress) {
+      if (typeof Worker === 'undefined') return null;
+      const TPR4 = window.TPR4;
+      const tables = await this.loadTables();
+      const n = Math.min(TPR4.PORTFOLIO.length, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
+      const pool = this.getPool(n, tables);
+      const reds = await this.mapPool(pool, TPR4.PORTFOLIO_DEEP,
+        (cfg) => ({ t: 'reduce', state, cfg }),
+        (done, total) => onProgress && onProgress(done, total + 1));
+      const good = reds.map((r) => r && r.red).filter(Boolean).sort((a, b) => a.length - b.length);
+      if (!good.length) return null;
+      const picks = [];
+      for (const r of good) {
+        if (!picks.some((p) => p.join(' ') === r.join(' '))) picks.push(r);
+        if (picks.length === 3) break;
+      }
+      const budget3 = { timeLimit: 4000, target: 18, minSearch: 1500 };
+      const fins = await this.mapPool(pool, picks, (red) => ({ t: 'finish', state, red, budget3 }));
+      if (onProgress) onProgress(TPR4.PORTFOLIO_DEEP.length + 1, TPR4.PORTFOLIO_DEEP.length + 1);
+      let best = null;
+      for (const f of fins) {
+        if (f && f.res && !f.res.error && f.res.moves && (!best || f.res.moves.length < best.moves.length)) best = f.res;
+      }
+      return best;
+    },
     async solveFast(state) {
       if (typeof Worker === 'undefined') return C4.solve4(state, 'fast');
       try {
@@ -633,6 +675,37 @@
     solution = res;
     moveIndex = 0;
     enterPlayback();
+    // 4×4 fast solutions can be refined by a much deeper (~1 min) search
+    btnHarder.style.display = mode === '4' && method === 'fast' && typeof Worker !== 'undefined' ? '' : 'none';
+  });
+
+  const btnHarder = document.getElementById('btnHarder');
+  btnHarder.addEventListener('click', async () => {
+    if (!solution || !baseState) return;
+    await waitIdle();
+    const st = baseState.slice();
+    const cur = solution;
+    const before = cur.moves.length;
+    btnHarder.disabled = true;
+    try {
+      const res = await solver4.solveHard(st, (done, total) => {
+        showMsg(`Searching much harder — ${Math.round((100 * done) / total)}% (best so far stays at ${before} moves until this finishes)…`, 'ok');
+      });
+      if (solution !== cur) {
+        showMsg('The cube changed while searching — deeper result discarded.', 'ok');
+      } else if (res && !res.error && res.moves && res.moves.length < before) {
+        solution = res;
+        moveIndex = 0;
+        enterPlayback();
+        showMsg(`Found a shorter solution: ${res.moves.length} moves (was ${before}). Playback reset to the start.`, 'ok');
+      } else {
+        showMsg(`No shorter solution found — keeping the ${before}-move one.`, 'ok');
+      }
+    } catch (_) {
+      showMsg(`The deeper search didn’t finish — keeping the ${before}-move solution.`, 'err');
+    } finally {
+      btnHarder.disabled = false;
+    }
   });
 
   function fixMsg(err) {
@@ -680,6 +753,7 @@
     mirrorGeo = false;
     solutionEl.style.display = 'none';
     btnEdit.style.display = 'none';
+    document.getElementById('btnHarder').style.display = 'none';
     btnSolve.style.display = '';
     paintCard.style.opacity = '';
     paintCard.style.pointerEvents = '';
