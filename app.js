@@ -150,6 +150,41 @@
   let playing = false;
   let speedVal = 5;
 
+  // ---------- persistence: the workspace survives refreshes ----------
+  // Saved per browser: every mode's paint, the active tab, solve method,
+  // palette selection, speed — and an in-progress solution with its exact
+  // playback position, so a refresh mid-follow-through resumes where you were.
+  const STORE_KEY = 'cubeSolverState:v1';
+  function saveStateNow() {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({
+        mode, method, selColor, selShape, speedVal,
+        paints: { 3: data['3'].paint, 4: data['4'].paint, 2: data['2'].paint, m: data.m.paint },
+        playback: solution && baseState ? { solution, baseState, moveIndex } : null,
+      }));
+    } catch (_) { /* storage unavailable (private mode, blocked) — run stateless */ }
+  }
+  let saveTimer = 0;
+  function saveState() { clearTimeout(saveTimer); saveTimer = setTimeout(saveStateNow, 250); }
+  function loadState() {
+    try {
+      const s = JSON.parse(localStorage.getItem(STORE_KEY));
+      if (!s || !s.paints) return null;
+      for (const k of ['3', '4', '2', 'm']) {
+        if (Array.isArray(s.paints[k]) && s.paints[k].length === data[k].paint.length) data[k].paint = s.paints[k];
+      }
+      if (['3', '4', '2', 'm'].includes(s.mode)) mode = s.mode;
+      if (s.method === 'fast' || s.method === 'beginner') method = s.method;
+      if (typeof s.selColor === 'string') selColor = s.selColor;
+      if (typeof s.selShape === 'number') selShape = s.selShape;
+      if (typeof s.speedVal === 'number' && s.speedVal >= 1 && s.speedVal <= 10) speedVal = s.speedVal;
+      return s;
+    } catch (_) { return null; }
+  }
+  const savedState = loadState();
+  window.addEventListener('pagehide', saveStateNow);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveStateNow(); });
+
   // ---------- 3D construction ----------
   const cubeEl = document.getElementById('cube');
   const viewport = document.getElementById('viewport');
@@ -256,6 +291,7 @@
 
   // ---------- rendering ----------
   function render() {
+    saveState();
     if (mode === 'm') {
       if (mirrorGeo && pbState) renderMirrorGeo(pbState);
       else renderMirrorPaint();
@@ -468,6 +504,7 @@
         b.addEventListener('click', () => {
           selShape = sh.code;
           document.querySelectorAll('.swatch').forEach((s) => s.classList.toggle('sel', s === b));
+          saveState();
         });
         paletteEl.appendChild(b);
       }
@@ -481,6 +518,7 @@
         b.addEventListener('click', () => {
           selColor = c;
           document.querySelectorAll('.swatch').forEach((s) => s.classList.toggle('sel', s === b));
+          saveState();
         });
         paletteEl.appendChild(b);
       }
@@ -542,6 +580,7 @@
       method = b.dataset.method;
       document.querySelectorAll('.segbtn').forEach((x) => x.classList.toggle('on', x === b));
       updateMethodNote();
+      saveState();
     });
   });
 
@@ -734,7 +773,7 @@
     fwd: document.getElementById('pbFwd'),
     end: document.getElementById('pbEnd'),
   };
-  document.getElementById('speed').addEventListener('input', (e) => { speedVal = +e.target.value; });
+  document.getElementById('speed').addEventListener('input', (e) => { speedVal = +e.target.value; saveState(); });
 
   function enterPlayback() {
     solutionEl.style.display = 'block';
@@ -886,9 +925,37 @@
   });
 
   // ---------- init ----------
+  // sync the static markup with any restored state before the first paint
+  if (savedState) {
+    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
+    document.querySelectorAll('.segbtn').forEach((x) => x.classList.toggle('on', x.dataset.method === method));
+    document.getElementById('speed').value = speedVal;
+    howtoEl.innerHTML = HOWTO[mode];
+    hint3d.textContent = HINT[mode];
+  }
   buildPalette();
   buildCube();
   render();
+  // resume an in-progress solution at the exact move it was left on
+  if (savedState && savedState.playback && savedState.playback.solution
+      && Array.isArray(savedState.playback.solution.moves) && Array.isArray(savedState.playback.baseState)) {
+    try {
+      solution = savedState.playback.solution;
+      baseState = savedState.playback.baseState;
+      moveIndex = Math.max(0, Math.min(solution.moves.length, savedState.playback.moveIndex | 0));
+      enterPlayback();
+      if (moveIndex > 0) {
+        pbState = ENG().applyAlg(baseState, solution.moves.slice(0, moveIndex));
+        render();
+        updatePlaybackUI();
+      }
+      showMsg(`Welcome back — resumed at move ${moveIndex} of ${solution.moves.length}.`, 'ok');
+      btnHarder.style.display = mode === '4' && method === 'fast' && typeof Worker !== 'undefined' ? '' : 'none';
+    } catch (_) {
+      exitPlayback();
+      render();
+    }
+  }
   window.addEventListener('resize', () => { buildCube(); render(); });
 
   // gentle idle wobble
