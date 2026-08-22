@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Headless acceptance harness for the camera cube detector.
 //
-// Extracts the SCAN module out of index.html, renders synthetic camera frame
+// Loads the SCAN module (scan.js), renders synthetic camera frame
 // sequences (a cube face at varying scale / tilt / position / lighting /
 // glare / noise over varying backgrounds, fresh sensor noise every frame) and
 // runs them through detectFace + the temporal tracker — the same pipeline the
@@ -29,24 +29,12 @@
 //   - false-lock rate ≤ 2% on realistic cube-free frames (false locks on the
 //     mosaic wall — which genuinely contains cube-like lattices — are
 //     reported separately as adversarial-informational)
-import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
-// ---------- load SCAN out of index.html ----------
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const html = readFileSync(join(root, 'index.html'), 'utf8');
-const start = html.indexOf('const SCAN = (() => {');
-const endMark = "if (typeof module !== 'undefined') module.exports = SCAN;";
-const end = html.indexOf(endMark);
-if (start < 0 || end < 0) {
-  console.error('could not find the SCAN module inside index.html');
-  process.exit(2);
-}
-const src = html.slice(start, end);
-const SCAN = new Function('performance', `${src}; return SCAN;`)(
-  { now: () => Date.now() },
-);
+const SCAN = createRequire(import.meta.url)(join(root, 'scan.js'));
 
 // ---------- tiny seeded PRNG (mulberry32) so runs are reproducible ----------
 function rng(seed) {
