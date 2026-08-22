@@ -964,6 +964,20 @@ const TPR4 = (() => {
     endgameTries: 1, greedyTries: 2, endgame: { lite: 1, width: 800, rounds: 14 },
   });
   const PORTFOLIO = [mkCfg(1.2, 0.35), mkCfg(0.9, 0.5), mkCfg(1.5, 0.25)];
+  // "Search harder" portfolio: more weight diversity, wider beams, richer
+  // closers. Roughly a minute of total search; ceiling-probed at ~52-56
+  // total moves versus ~61-68 for the fast portfolio.
+  const dCfg = (w1, w2, width) => ({
+    lite: 1, width, w1, w2, pool: 10, stallLimit: 24,
+    endgameTries: 3, greedyTries: 3, endgame: { lite: 1, width: 2000, rounds: 18 },
+  });
+  const PORTFOLIO_DEEP = [
+    dCfg(1.2, 0.35, 800), dCfg(0.9, 0.5, 800), dCfg(1.5, 0.25, 800), dCfg(1.05, 0.42, 800),
+    dCfg(1.2, 0.35, 1600), dCfg(0.9, 0.5, 1600), dCfg(1.5, 0.25, 1600), dCfg(1.35, 0.3, 1600),
+    // extreme weightings: rarely best, but they rescue the stubborn scrambles
+    // every mainstream config wanders on
+    dCfg(0.75, 0.6, 1600), dCfg(1.8, 0.15, 1600),
+  ];
 
   // full phased reduction: returns move list or null.
   function phasedReduce(state, scheme, opts = {}) {
@@ -1027,7 +1041,7 @@ const TPR4 = (() => {
 
   return {
     MOVES36, centerPerm, wingPerm, SET36, SET28, SET24, OUTER18,
-    buildAll, exportTables, importTables, TABLES_VERSION, PORTFOLIO,
+    buildAll, exportTables, importTables, TABLES_VERSION, PORTFOLIO, PORTFOLIO_DEEP,
     phasedReduce, walkPhase, phase3Beam8, score8, centersExact, encode96, idaStar8,
     classMask24, lrMask16, axisMasks, wingParityOf, phase1Options, endgameBeam8, pllParity8,
     apply8, hash8, centersExact8, allPaired8, wingParity8,

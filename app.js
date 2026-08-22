@@ -45,6 +45,48 @@
       }
       return this.pool;
     },
+    // run tasks over the pool, each worker pulling the next when free
+    async mapPool(pool, items, makeMsg, onProgress) {
+      let next = 0, done = 0;
+      const out = new Array(items.length);
+      await Promise.all(pool.map(async (w) => {
+        while (next < items.length) {
+          const i = next++;
+          out[i] = await this.call(w, makeMsg(items[i]));
+          done++;
+          if (onProgress) onProgress(done, items.length);
+        }
+      }));
+      return out;
+    },
+    // "Search harder": the deep portfolio queued over the pool, then the top
+    // distinct reductions each get their own generous 3×3 finish; shortest
+    // total wins. ~30-60s. Returns null if workers are unavailable.
+    async solveHard(state, onProgress) {
+      if (typeof Worker === 'undefined') return null;
+      const TPR4 = window.TPR4;
+      const tables = await this.loadTables();
+      const n = Math.min(TPR4.PORTFOLIO.length, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
+      const pool = this.getPool(n, tables);
+      const reds = await this.mapPool(pool, TPR4.PORTFOLIO_DEEP,
+        (cfg) => ({ t: 'reduce', state, cfg }),
+        (done, total) => onProgress && onProgress(done, total + 1));
+      const good = reds.map((r) => r && r.red).filter(Boolean).sort((a, b) => a.length - b.length);
+      if (!good.length) return null;
+      const picks = [];
+      for (const r of good) {
+        if (!picks.some((p) => p.join(' ') === r.join(' '))) picks.push(r);
+        if (picks.length === 3) break;
+      }
+      const budget3 = { timeLimit: 4000, target: 18, minSearch: 1500 };
+      const fins = await this.mapPool(pool, picks, (red) => ({ t: 'finish', state, red, budget3 }));
+      if (onProgress) onProgress(TPR4.PORTFOLIO_DEEP.length + 1, TPR4.PORTFOLIO_DEEP.length + 1);
+      let best = null;
+      for (const f of fins) {
+        if (f && f.res && !f.res.error && f.res.moves && (!best || f.res.moves.length < best.moves.length)) best = f.res;
+      }
+      return best;
+    },
     async solveFast(state) {
       if (typeof Worker === 'undefined') return C4.solve4(state, 'fast');
       try {
@@ -134,6 +176,12 @@
   function buildCube() {
     clearCube();
     computeS();
+    // Uniform cubes hide their interior faces at rest (they're occluded
+    // anyway): iPad Safari's 3D compositor mis-sorts large plane counts,
+    // drawing dark interior wedges over the stickers. The faces reappear
+    // while a layer turns, so turns still show the cube's inside. Mirror
+    // cubes keep all faces — their varied piece sizes expose body faces.
+    cubeEl.classList.toggle('occlude', mode !== 'm');
     if (mode === '3') {
       for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
         if (!x && !y && !z) continue;
@@ -366,6 +414,7 @@
       const pivot = useCut
         ? `translate3d(${px}px, ${py}px, ${pz}px) rotate3d(${axis[0]}, ${axis[1]}, ${axis[2]}, ${angle}deg) translate3d(${-px}px, ${-py}px, ${-pz}px) `
         : `rotate3d(${axis[0]}, ${axis[1]}, ${axis[2]}, ${angle}deg) `;
+      cubeEl.classList.add('turning');
       affected.forEach((el) => {
         el.style.transition = `transform ${dur}ms cubic-bezier(0.35, 0, 0.25, 1)`;
         el.style.transform = pivot + el.dataset.base;
@@ -376,6 +425,7 @@
         render();
         for (const k in cubies) cubies[k].el.style.transform = cubies[k].el.dataset.base;
         void cubeEl.offsetWidth;
+        cubeEl.classList.remove('turning');
         resolve();
       }, dur + 30);
     });
@@ -633,6 +683,37 @@
     solution = res;
     moveIndex = 0;
     enterPlayback();
+    // 4×4 fast solutions can be refined by a much deeper (~1 min) search
+    btnHarder.style.display = mode === '4' && method === 'fast' && typeof Worker !== 'undefined' ? '' : 'none';
+  });
+
+  const btnHarder = document.getElementById('btnHarder');
+  btnHarder.addEventListener('click', async () => {
+    if (!solution || !baseState) return;
+    await waitIdle();
+    const st = baseState.slice();
+    const cur = solution;
+    const before = cur.moves.length;
+    btnHarder.disabled = true;
+    try {
+      const res = await solver4.solveHard(st, (done, total) => {
+        showMsg(`Searching much harder — ${Math.round((100 * done) / total)}% (best so far stays at ${before} moves until this finishes)…`, 'ok');
+      });
+      if (solution !== cur) {
+        showMsg('The cube changed while searching — deeper result discarded.', 'ok');
+      } else if (res && !res.error && res.moves && res.moves.length < before) {
+        solution = res;
+        moveIndex = 0;
+        enterPlayback();
+        showMsg(`Found a shorter solution: ${res.moves.length} moves (was ${before}). Playback reset to the start.`, 'ok');
+      } else {
+        showMsg(`No shorter solution found — keeping the ${before}-move one.`, 'ok');
+      }
+    } catch (_) {
+      showMsg(`The deeper search didn’t finish — keeping the ${before}-move solution.`, 'err');
+    } finally {
+      btnHarder.disabled = false;
+    }
   });
 
   function fixMsg(err) {
@@ -680,6 +761,7 @@
     mirrorGeo = false;
     solutionEl.style.display = 'none';
     btnEdit.style.display = 'none';
+    document.getElementById('btnHarder').style.display = 'none';
     btnSolve.style.display = '';
     paintCard.style.opacity = '';
     paintCard.style.pointerEvents = '';
@@ -733,9 +815,21 @@
     const st = solution.stages.find((s) => moveIndex >= s.start && moveIndex < s.end);
     if (st) {
       const stgEl = document.getElementById('stg' + solution.stages.indexOf(st));
-      const top = stgEl.offsetTop, bot = top + stgEl.offsetHeight;
-      const vTop = stagelistEl.scrollTop, vBot = vTop + stagelistEl.clientHeight;
-      if (top < vTop || bot > vBot) stagelistEl.scrollTo({ top: top - 6, behavior: 'smooth' });
+      if (stagelistEl.scrollHeight > stagelistEl.clientHeight + 4) {
+        // desktop: the stage list scrolls inside its own box
+        const top = stgEl.offsetTop, bot = top + stgEl.offsetHeight;
+        const vTop = stagelistEl.scrollTop, vBot = vTop + stagelistEl.clientHeight;
+        if (top < vTop || bot > vBot) stagelistEl.scrollTo({ top: top - 6, behavior: 'smooth' });
+      } else {
+        // phone: the page scrolls under the pinned cube — keep the active
+        // stage in the visible band between the cube and the bottom edge
+        const stage = document.querySelector('.stage3d');
+        const band0 = (stage ? stage.getBoundingClientRect().bottom : 0) + 60;
+        const r = stgEl.getBoundingClientRect();
+        if (r.top < band0 || r.top > innerHeight - 120) {
+          window.scrollTo({ top: window.scrollY + r.top - band0, behavior: 'smooth' });
+        }
+      }
     }
   }
 

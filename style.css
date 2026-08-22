@@ -28,7 +28,7 @@
     min-height: 100%;
     overscroll-behavior-y: none;
   }
-  .wrap { max-width: 1040px; margin: 0 auto; padding: 14px 14px 48px; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 14px 14px 48px; }
   header { display: flex; align-items: baseline; gap: 10px; padding: 6px 2px 10px; flex-wrap: wrap; }
   header h1 { font-size: 22px; letter-spacing: 0.3px; }
   header h1 .grad { background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
@@ -43,13 +43,59 @@
   .tab.on { color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent2)); border-color: transparent; box-shadow: 0 4px 14px rgba(108,123,255,0.35); }
 
   .layout { display: grid; grid-template-columns: 1fr; gap: 14px; }
-  @media (min-width: 860px) { .layout { grid-template-columns: 1.15fr 1fr; align-items: start; } }
 
   .stage3d {
     position: relative; background: var(--card); border: 1px solid var(--card-border);
     border-radius: 20px; padding: 8px; touch-action: none; user-select: none; overflow: hidden;
   }
   .viewport { width: 100%; aspect-ratio: 1 / 1; max-height: 62vh; perspective: 1100px; display: flex; align-items: center; justify-content: center; cursor: grab; }
+
+  /* ---- phones: the cube stays pinned while everything scrolls beneath it,
+     so you can paint from the palette and follow a playing solution without
+     losing sight of the cube ---- */
+  @media (max-width: 859px) {
+    .wrap { padding: 8px 10px calc(34px + env(safe-area-inset-bottom)); }
+    header { padding: 4px 2px 6px; }
+    header h1 { font-size: 19px; }
+    header .sub { font-size: 12px; }
+    .tabs { margin-bottom: 10px; }
+    .tab { flex: 1 1 0; text-align: center; padding: 10px 4px; }
+    .stage3d {
+      position: sticky; top: 6px; z-index: 10;
+      background: linear-gradient(rgba(255,255,255,0.06), rgba(255,255,255,0.06)), rgba(13,16,35,0.94);
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+    }
+    .viewport { max-height: 38vh; }
+    .hint3d { position: static; padding: 2px 0 4px; }
+    button.btn { min-height: 44px; }
+    .btnrow button.btn { flex: 1 1 auto; }
+    .stagelist { max-height: none; overflow-y: visible; }
+    footer { margin-top: 18px; }
+    /* anchored scrolls land below the pinned cube */
+    .card { scroll-margin-top: calc(38vh + 64px); }
+    /* the play controls stay pinned right under the cube during playback */
+    #solution .playbar {
+      position: sticky; top: calc(38vh + 52px); z-index: 9;
+      background: linear-gradient(rgba(255,255,255,0.06), rgba(255,255,255,0.06)), rgba(13,16,35,0.94);
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      padding: 6px; margin: -6px -6px 0; border-radius: 14px;
+    }
+  }
+
+  /* ---- larger screens: cube and controls side by side, the cube column
+     pinned so it never scrolls away while reading the solution; header and
+     mode tabs share one row ---- */
+  @media (min-width: 860px) {
+    .layout { grid-template-columns: 1.15fr 1fr; gap: 20px; align-items: start; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .topbar .tabs { margin-bottom: 0; }
+    .topbar header { padding-bottom: 6px; }
+    .stage3d { position: sticky; top: 16px; }
+    .viewport { max-height: calc(100vh - 140px); }
+    .card { padding: 16px 18px; }
+    .stagelist { max-height: 56vh; }
+  }
   .viewport:active { cursor: grabbing; }
   .cube { position: relative; transform-style: preserve-3d; width: 0; height: 0; }
   .cubie { position: absolute; transform-style: preserve-3d; width: 0; height: 0; }
@@ -66,6 +112,12 @@
     border-color: #131313;
   }
   .cf.mirrorbody { background: #17181d; border-color: #0b0b0e; }
+  /* interior faces are hidden at rest (occluded anyway): Safari's 3D
+     compositor mis-sorts large plane counts and paints dark interior wedges
+     over the stickers, so the fewer planes, the better. They come back
+     while a layer is turning, which is the only time they can be seen. */
+  .cube.occlude .cf:not(.sticker) { visibility: hidden; }
+  .cube.occlude.turning .cf:not(.sticker) { visibility: visible; }
   /* shape rect shown while painting the mirror cube */
   .shaperect {
     position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
@@ -91,7 +143,7 @@
   .swatch[data-c="X"], .swatch[data-shape="X"] { background: var(--c-X); background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.08) 0 5px, transparent 5px 10px); }
   .swatch .srect { background: linear-gradient(135deg, var(--gold1), var(--gold2)); border-radius: 3px; }
   .swlabel { position: absolute; bottom: -16px; left: 0; right: 0; text-align: center; font-size: 9.5px; color: var(--muted); }
-  .palette.shapes { margin-bottom: 16px; }
+  .palette.shapes { margin-bottom: 16px; row-gap: 22px; }
 
   .seg { display: flex; gap: 0; border: 1px solid var(--card-border); border-radius: 12px; overflow: hidden; margin-bottom: 10px; }
   .segbtn {

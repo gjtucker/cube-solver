@@ -575,11 +575,11 @@ const C4 = (() => {
       for (const f of C4.FACES) map[this.scheme[f]] = f;
       return s3.map((col) => map[col]);
     }
-    solve3(method) {
+    solve3(method, budget3) {
       for (let attempt = 0; attempt < 4; attempt++) {
         const p = this.project();
         const res = method === 'fast'
-          ? C3.solve3Fast(p, { timeLimit: 1350, target: 20, minSearch: 350 })
+          ? C3.solve3Fast(p, budget3 || { timeLimit: 1350, target: 20, minSearch: 350 })
           : C3.solve(p);
         if (!res.error) {
           if (res.alreadySolved) return;
@@ -685,7 +685,7 @@ const C4 = (() => {
   // C4.phasedReducer is registered by the tpr4 module when it loads.
   // pre: an externally computed reduction move list (e.g. from parallel
   // workers) — skips the reducer and just assembles/finishes the solution
-  function solvePhased(state, pre) {
+  function solvePhased(state, pre, budget3) {
     if (!C4.phasedReducer && !pre) return null;
     const probe = new Solver4(state);
     try { probe.deriveScheme(); } catch (e) { return null; }
@@ -693,7 +693,7 @@ const C4 = (() => {
     const red = pre && pre.length ? pre : C4.phasedReducer ? C4.phasedReducer(state, scheme) : null;
     if (!red) return null;
     const mid = C4.applyAlg(state, red);
-    const rest = finish3x3(mid, scheme, 'fast');
+    const rest = finish3x3(mid, scheme, 'fast', budget3);
     if (!rest) return null;
     const stages = [{
       name: 'Reduce to a 3×3',
@@ -710,7 +710,7 @@ const C4 = (() => {
     if (C4.isSolved(state)) return { moves: [], stages: [], alreadySolved: true };
     let raw = null;
     if (method === 'fast') {
-      try { raw = solvePhased(state, opts && opts.reduction); } catch (e) { raw = null; }
+      try { raw = solvePhased(state, opts && opts.reduction, opts && opts.budget3); } catch (e) { raw = null; }
       if (raw && !C4.isSolved(C4.applyAlg(state, raw.moves))) raw = null; // safety net
       if (raw && raw.moves.length > 100) {
         // rare long outlier: let the classic pipeline compete
@@ -761,11 +761,11 @@ const C4 = (() => {
   }
 
   // 3x3 stage (with parity fixes) from a fully reduced state
-  function finish3x3(state, scheme, method) {
+  function finish3x3(state, scheme, method, budget3) {
     const solver = new Solver4(state);
     solver.scheme = scheme;
     try {
-      solver.solve3(method);
+      solver.solve3(method, budget3);
     } catch (e) {
       if (e instanceof SolveError4) return null;
       throw e;
