@@ -4245,8 +4245,10 @@ const SCAN = (() => {
       }
       return pairs ? Math.atan2(S, C) / 4 : null;
     }
-    // fit an n×n lattice to a set of candidate sticker centres
-    function fitLattice(pts, pitch0) {
+    // fit an n×n lattice to a set of candidate sticker centres; seedPt is a
+    // trusted sticker centre the lattice is anchored to, so points from a
+    // second lattice in the scene (tiled backgrounds) cannot drag the phase
+    function fitLattice(pts, pitch0, seedPt) {
       const m = pts.length;
       // nearest-neighbour distances -> pitch (grid neighbours sit one pitch apart)
       const nn = [];
@@ -4260,81 +4262,111 @@ const SCAN = (() => {
         nn.push(bd);
       }
       nn.sort((a, b) => a - b);
-      let pitch = nn[m >> 1];
-      if (!(pitch > pitch0 * 0.6 && pitch < pitch0 * 1.7)) return null;
-      const angle = latticeAngle(pts, pitch);
-      if (angle === null) return null;
-      const ca = Math.cos(angle), sa = Math.sin(angle);
+      const nnPitch = nn[m >> 1];
+      // two independent pitch estimates: the median neighbour distance (can be
+      // outvoted by a lattice-like background) and the seed sticker's own size
+      // (background-proof). When they disagree, try both — scoring arbitrates.
+      const tries = [];
+      if (nnPitch > pitch0 * 0.6 && nnPitch < pitch0 * 1.7) tries.push(nnPitch);
+      if (!tries.some((p) => Math.abs(p - pitch0) < pitch0 * 0.12)) tries.push(pitch0);
+      if (!tries.length) return null;
       let mx = 0, my = 0;
       for (const p of pts) { mx += p[0]; my += p[1]; }
       mx /= m; my /= m;
-      const rot = pts.map(([x, y]) => {
-        const dx = x - mx, dy = y - my;
-        return [ca * dx + sa * dy, -sa * dx + ca * dy];
-      });
-      let cells = null, inl = null;
-      for (let iter = 0; iter < 3; iter++) {
-        // lattice phase along each axis (robust to outliers), then integer cell indices
-        let cu = 0, su = 0, cv = 0, sv = 0;
-        for (const r of rot) {
-          const u = (2 * Math.PI * r[0]) / pitch, v = (2 * Math.PI * r[1]) / pitch;
-          cu += Math.cos(u); su += Math.sin(u); cv += Math.cos(v); sv += Math.sin(v);
-        }
-        const phU = Math.atan2(su, cu) / (2 * Math.PI), phV = Math.atan2(sv, cv) / (2 * Math.PI);
-        cells = rot.map((r) => [r[0] / pitch - phU, r[1] / pitch - phV]);
-        inl = cells.map((c) => Math.abs(c[0] - Math.round(c[0])) < 0.3 && Math.abs(c[1] - Math.round(c[1])) < 0.3);
-        // refine the pitch: least-squares slope of rotated coords vs integer cells, both axes
-        let num = 0, den = 0;
-        for (let k = 0; k < 2; k++) {
-          let sA = 0, sB = 0, sAA = 0, sAB = 0, cnt = 0;
-          cells.forEach((c, i) => {
-            if (!inl[i]) return;
-            const a = Math.round(c[k]), b = rot[i][k];
-            sA += a; sB += b; sAA += a * a; sAB += a * b; cnt++;
+      const allFits = [];
+      for (const startPitch of tries) {
+        let pitch = startPitch;
+        let angle = latticeAngle(pts, pitch);
+        if (angle === null) continue;
+        let ca, sa, rot, rs;
+        const setAngle = (a) => {
+          angle = a; ca = Math.cos(a); sa = Math.sin(a);
+          rot = pts.map(([x, y]) => {
+            const dx = x - mx, dy = y - my;
+            return [ca * dx + sa * dy, -sa * dx + ca * dy];
           });
-          if (cnt < 2) continue;
-          num += sAB - (sA * sB) / cnt;
-          den += sAA - (sA * sA) / cnt;
+          rs = [
+            ca * (seedPt[0] - mx) + sa * (seedPt[1] - my),
+            -sa * (seedPt[0] - mx) + ca * (seedPt[1] - my),
+          ];
+        };
+        setAngle(angle);
+        // cell indices relative to the seed sticker (the lattice phase is
+        // anchored there, so a second lattice in the scene cannot shift it)
+        const reproject = () => {
+          cells = rot.map((r) => [(r[0] - rs[0]) / pitch, (r[1] - rs[1]) / pitch]);
+          inl = cells.map((c) => Math.abs(c[0] - Math.round(c[0])) < 0.3 && Math.abs(c[1] - Math.round(c[1])) < 0.3);
+        };
+        let cells = null, inl = null;
+        for (let iter = 0; iter < 3; iter++) {
+          reproject();
+          // refine the pitch: least-squares slope of rotated coords vs integer cells, both axes
+          let num = 0, den = 0;
+          for (let k = 0; k < 2; k++) {
+            let sA = 0, sB = 0, sAA = 0, sAB = 0, cnt = 0;
+            cells.forEach((c, i) => {
+              if (!inl[i]) return;
+              const a = Math.round(c[k]), b = rot[i][k];
+              sA += a; sB += b; sAA += a * a; sAB += a * b; cnt++;
+            });
+            if (cnt < 2) continue;
+            num += sAB - (sA * sB) / cnt;
+            den += sAA - (sA * sA) / cnt;
+          }
+          if (den > 1e-6) {
+            const p2 = num / den;
+            if (p2 > pitch * 0.7 && p2 < pitch * 1.3) pitch = p2;
+          }
+          // re-estimate the angle from inliers only, so points of a foreign
+          // lattice (tiled backgrounds) cannot twist the fit
+          const inPts = pts.filter((_, i) => inl[i]);
+          if (inPts.length >= 3) {
+            const a2 = latticeAngle(inPts, pitch);
+            if (a2 !== null) setAngle(a2);
+          }
         }
-        if (den > 1e-6) {
-          const p2 = num / den;
-          if (p2 > pitch * 0.7 && p2 < pitch * 1.3) pitch = p2;
+        reproject();
+        const ints = cells.map((c) => [Math.round(c[0]), Math.round(c[1])]);
+        let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+        ints.forEach((c, i) => {
+          if (!inl[i]) return;
+          minU = Math.min(minU, c[0]); maxU = Math.max(maxU, c[0]);
+          minV = Math.min(minV, c[1]); maxV = Math.max(maxV, c[1]);
+        });
+        if (!isFinite(minU)) continue;
+        // enumerate the n×n windows over the stickers; when several hold nearly
+        // as many stickers as the best one (a lattice-like background continues
+        // past the face), all of them are returned and the caller arbitrates by
+        // seam quality — position alone cannot tell them apart
+        const aLo = Math.min(minU, maxU - (n - 1)), aHi = Math.max(minU, maxU - (n - 1));
+        const bLo = Math.min(minV, maxV - (n - 1)), bHi = Math.max(minV, maxV - (n - 1));
+        const wins = [];
+        for (let a = aLo; a <= aHi; a++) {
+          for (let b = bLo; b <= bHi; b++) {
+            let cnt = 0;
+            ints.forEach((c, i) => {
+              if (inl[i] && c[0] >= a && c[0] < a + n && c[1] >= b && c[1] < b + n) cnt++;
+            });
+            const off = Math.abs(a - (aLo + aHi) / 2) + Math.abs(b - (bLo + bHi) / 2);
+            wins.push({ a, b, cnt, off });
+          }
+        }
+        wins.sort((p, q) => q.cnt - p.cnt || p.off - q.off);
+        // lattice origin in rotated coords = mean residual of the inliers
+        let ox = 0, oy = 0, cnt = 0;
+        ints.forEach((c, i) => {
+          if (!inl[i]) return;
+          ox += rot[i][0] - c[0] * pitch; oy += rot[i][1] - c[1] * pitch; cnt++;
+        });
+        ox /= cnt; oy /= cnt;
+        const size = n * pitch;
+        for (const win of wins.filter((w, i) => i < 8 && w.cnt >= wins[0].cnt * 0.7)) {
+          const rx = ox + (win.a + (n - 1) / 2) * pitch, ry = oy + (win.b + (n - 1) / 2) * pitch;
+          const cx = mx + ca * rx - sa * ry, cy = my + sa * rx + ca * ry;
+          allFits.push({ cx, cy, x: cx - size / 2, y: cy - size / 2, size, angle, count: win.cnt, total: n * n });
         }
       }
-      const ints = cells.map((c) => [Math.round(c[0]), Math.round(c[1])]);
-      let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
-      ints.forEach((c, i) => {
-        if (!inl[i]) return;
-        minU = Math.min(minU, c[0]); maxU = Math.max(maxU, c[0]);
-        minV = Math.min(minV, c[1]); maxV = Math.max(maxV, c[1]);
-      });
-      if (!isFinite(minU)) return null;
-      // choose the n×n window holding the most stickers; when the visible
-      // stickers don't span the whole face, centre the window on them
-      const aLo = Math.min(minU, maxU - (n - 1)), aHi = Math.max(minU, maxU - (n - 1));
-      const bLo = Math.min(minV, maxV - (n - 1)), bHi = Math.max(minV, maxV - (n - 1));
-      let win = null;
-      for (let a = aLo; a <= aHi; a++) {
-        for (let b = bLo; b <= bHi; b++) {
-          let cnt = 0;
-          ints.forEach((c, i) => {
-            if (inl[i] && c[0] >= a && c[0] < a + n && c[1] >= b && c[1] < b + n) cnt++;
-          });
-          const off = Math.abs(a - (aLo + aHi) / 2) + Math.abs(b - (bLo + bHi) / 2);
-          if (!win || cnt > win.cnt || (cnt === win.cnt && off < win.off)) win = { a, b, cnt, off };
-        }
-      }
-      // lattice origin in rotated coords = mean residual of the inliers
-      let ox = 0, oy = 0, cnt = 0;
-      ints.forEach((c, i) => {
-        if (!inl[i]) return;
-        ox += rot[i][0] - c[0] * pitch; oy += rot[i][1] - c[1] * pitch; cnt++;
-      });
-      ox /= cnt; oy /= cnt;
-      const rx = ox + (win.a + (n - 1) / 2) * pitch, ry = oy + (win.b + (n - 1) / 2) * pitch;
-      const cx = mx + ca * rx - sa * ry, cy = my + sa * rx + ca * ry;
-      const size = n * pitch;
-      return { cx, cy, x: cx - size / 2, y: cy - size / 2, size, angle, count: win.cnt, total: n * n };
+      return allFits;
     }
 
     if (opts.debug) opts.debug.tBlobs = performance.now() - T0;
@@ -4389,7 +4421,110 @@ const SCAN = (() => {
       }
       return out;
     }
+    // A real cube face shows a seam between neighbouring stickers: the plastic
+    // gap (black on standard cubes, bright on white-plastic ones, a darker
+    // crease on stickerless). A lattice hallucinated from a mosaic of touching
+    // colour patches (posters, shelves, tiled screens) has no seams — every
+    // boundary pixel belongs to one of its two neighbours. So a pair of
+    // adjacent cells counts as seamed when the pixels between them differ in
+    // colour from BOTH cells; a fit whose pairs are mostly seamless is not a
+    // cube face.
+    function rgbPatch(x, y, r) {
+      const x0 = Math.max(0, Math.round(x - r)), x1 = Math.min(W - 1, Math.round(x + r));
+      const y0 = Math.max(0, Math.round(y - r)), y1 = Math.min(H - 1, Math.round(y + r));
+      if (x0 > x1 || y0 > y1) return null;
+      let sr = 0, sg = 0, sb = 0, cnt = 0;
+      for (let yy = y0; yy <= y1; yy++) {
+        for (let xx = x0; xx <= x1; xx++) {
+          const o = (yy * W + xx) * 4;
+          sr += d[o]; sg += d[o + 1]; sb += d[o + 2]; cnt++;
+        }
+      }
+      return [sr / cnt, sg / cnt, sb / cnt];
+    }
+    function faceStats(fit) {
+      const pitch = fit.size / n;
+      const ca = Math.cos(fit.angle), sa = Math.sin(fit.angle);
+      const at = (u, v) => [fit.cx + ca * u - sa * v, fit.cy + sa * u + ca * v];
+      const cellR = Math.max(1, pitch * 0.18);
+      const off = (k) => (k - (n - 1) / 2) * pitch;
+      const l1 = (p, q) => Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]) + Math.abs(p[2] - q[2]);
+      const cells = [], feats = [];
+      let cubeLike = 0, cellCnt = 0;
+      for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+          const p = at(off(i), off(j));
+          const c = rgbPatch(p[0], p[1], cellR);
+          cells.push(c);
+          if (!c) continue;
+          cellCnt++;
+          feats.push(featOf(c));
+          // stickers are saturated cube colours or clean white; background
+          // clutter is mostly mid-saturation muddy colour
+          const { s, v } = rgbToHsv(c[0], c[1], c[2]);
+          if (v >= 0.12 && s >= 0.55) cubeLike++;
+          else if (v >= 0.5 && s <= 0.32) cubeLike++;
+          else if (v >= 0.12 && s < 0.55 && s > 0.32) cubeLike += 0.5;
+        }
+      }
+      // a face draws its cells from at most 6 cube colours, so repeats are
+      // guaranteed on a 3×3; a window over random surroundings reads mostly
+      // distinct colours — count colour clusters (transitive linking)
+      const cl = new Array(feats.length).fill(-1);
+      let clusters = 0;
+      for (let i = 0; i < feats.length; i++) {
+        if (cl[i] !== -1) continue;
+        cl[i] = clusters;
+        for (let j = i + 1; j < feats.length; j++) {
+          if (cl[j] === -1 && dist2(feats[i], feats[j]) < 0.25 * 0.25) cl[j] = cl[i];
+        }
+        clusters++;
+      }
+      let seamed = 0, checked = 0;
+      const gapCols = [];
+      for (let axis = 0; axis < 2; axis++) {
+        for (let i = 0; i + 1 < n; i++) {
+          for (let j = 0; j < n; j++) {
+            const a = axis ? cells[j * n + i] : cells[i * n + j];
+            const b = axis ? cells[j * n + i + 1] : cells[(i + 1) * n + j];
+            if (!a || !b) continue;
+            checked++;
+            // 3 single-pixel probes along the seam line between the two cells
+            let gappy = 0;
+            for (const t of [-0.25, 0, 0.25]) {
+              const mp = axis
+                ? at(off(j) + t * pitch, off(i) + pitch / 2)
+                : at(off(i) + pitch / 2, off(j) + t * pitch);
+              const s = rgbPatch(mp[0], mp[1], 0);
+              if (s && Math.min(l1(s, a), l1(s, b)) > 55) { gappy++; gapCols.push(s); }
+            }
+            if (gappy >= 2) seamed++;
+          }
+        }
+      }
+      // real seams are the cube's plastic, so they look alike face-wide: all
+      // dark (black plastic, stickerless creases) or all clustered on one
+      // colour (white plastic). Random third colours peeking between cells of
+      // a cluttered background are neither.
+      let seamConsistent = true;
+      if (gapCols.length >= 4) {
+        let meanCellMax = 0, mc = 0;
+        for (const c of cells) if (c) { meanCellMax += Math.max(c[0], c[1], c[2]); mc++; }
+        meanCellMax /= Math.max(1, mc);
+        const dark = gapCols.filter((g) => Math.max(g[0], g[1], g[2]) < meanCellMax * 0.45).length;
+        const med = [0, 1, 2].map((k) => gapCols.map((g) => g[k]).sort((x, y) => x - y)[gapCols.length >> 1]);
+        const near = gapCols.filter((g) => l1(g, med) < 60).length;
+        seamConsistent = dark >= gapCols.length * 0.6 || near >= gapCols.length * 0.6;
+      }
+      return {
+        seam: checked ? seamed / checked : 0,
+        seamConsistent,
+        cubeFrac: cellCnt ? cubeLike / cellCnt : 0,
+        repeats: Math.max(0, cellCnt - clusters),
+      };
+    }
     let best = null;
+    const accepted = [];         // every fit that survived the checks, for the ambiguity guard
     const covered = new Map();   // single -> unit area of the seed that already grouped it
     for (const seed of singles) {
       const unit = seed.area, side = seed.side;
@@ -4399,10 +4534,10 @@ const SCAN = (() => {
       const pitch0 = side / 0.84;                       // sticker ≈ 84 % of the cell
       const R = pitch0 * ((n - 1) * 1.25 + 0.75);       // reach of one face from this sticker
       const near = (b) => Math.hypot(b.cx - seed.cx, b.cy - seed.cy) <= R;
-      const pts = [];
+      const pts = [], grouped = [];
       for (const b of singles) {
         const ratio = b.area / unit;
-        if (ratio >= 0.5 && ratio <= 2 && near(b)) { pts.push([b.cx, b.cy]); if (!covered.has(b)) covered.set(b, unit); }
+        if (ratio >= 0.5 && ratio <= 2 && near(b)) { pts.push([b.cx, b.cy]); grouped.push(b); }
       }
       const clean = pts.length;
       const merged = mergedAll.filter((b) => {
@@ -4430,16 +4565,46 @@ const SCAN = (() => {
       }
       if (pts.length < minCount) continue;
       if (clean < 2 && !(n === 2 && pts.length === 4)) continue;   // split cells alone are not evidence
-      const fit = fitLattice(pts, pitch0);
-      if (opts.debug) opts.debug.fits.push({ seed: [seed.cx, seed.cy, seed.area], pts, fit });
-      if (!fit || fit.count < minCount) continue;
-      if (clean < 2 && fit.count < 4) continue;
-      // more stickers wins; ties go to the face nearest the preferred point
-      const score = fit.count - Math.hypot(fit.cx - pref.x, fit.cy - pref.y) / (4 * minDim);
-      if (!best || score > best.score) best = Object.assign(fit, { score });
+      const fits = fitLattice(pts, pitch0, [seed.cx, seed.cy]) || [];
+      if (opts.debug) opts.debug.fits.push({ seed: [seed.cx, seed.cy, seed.area], pts, fit: fits[0] || null });
+      let acceptedAny = false;
+      for (const fit of fits) {
+        if (fit.count < minCount) continue;
+        if (clean < 2 && fit.count < 4) continue;
+        const st = faceStats(fit);
+        if (st.seam < 0.5) continue;               // no sticker gaps: not a cube face
+        if (!st.seamConsistent) continue;          // gaps aren't one plastic colour
+        if (n >= 3 && st.repeats < 2) continue;    // n² cells of ≤6 colours must repeat
+        // more stickers, cleaner seams, cube-palette cells and repeated
+        // colours win (a window shifted onto lattice-like background keeps
+        // its count but loses seams, palette and repeats); ties go to the
+        // face nearest the preferred point
+        const score = fit.count * (0.25 + st.seam) * (0.4 + 0.6 * st.cubeFrac)
+          * (0.7 + 0.075 * Math.min(4, st.repeats))
+          - Math.hypot(fit.cx - pref.x, fit.cy - pref.y) / (4 * minDim);
+        accepted.push(Object.assign(fit, { score }));
+        acceptedAny = true;
+        if (!best || score > best.score) best = fit;
+      }
+      // only a seed that produced a plausible face claims its group — a failed
+      // grouping must not stop those same stickers from seeding their own fit
+      if (acceptedAny) for (const b of grouped) if (!covered.has(b)) covered.set(b, unit);
     }
-    if (opts.debug) opts.debug.tSeeds = performance.now() - T0;
-    if (best) { delete best.score; return best; }
+    if (opts.debug) { opts.debug.tSeeds = performance.now() - T0; opts.debug.accepted = accepted; }
+    if (best) {
+      // ambiguity guard: on a background that itself looks like sticker
+      // lattices (tiled walls, mosaics) several incompatible fits score about
+      // the same — a confident box in the wrong place captures wrong colours,
+      // so prefer "not found" over a coin flip
+      for (const f of accepted) {
+        if (f === best || f.score < best.score * 0.75) continue;
+        const apart = Math.hypot(f.cx - best.cx, f.cy - best.cy) > best.size * 0.3
+          || f.size < best.size * 0.8 || f.size > best.size * 1.25;
+        if (apart) return null;
+      }
+      delete best.score;
+      return best;
+    }
 
     // fallback: one big, solid, square, cube-coloured blob without a crowd of
     // similar blobs around it (a solved face, or a single-colour face)
@@ -4478,6 +4643,48 @@ const SCAN = (() => {
     const cx = c * bb.u - s * bb.v, cy = s * bb.u + c * bb.v;
     const size = (bb.w + bb.h) / 2;
     return { cx, cy, x: cx - size / 2, y: cy - size / 2, size, angle: bb.a, count: 0, total: n * n, single: true };
+  }
+
+  // ---------- temporal tracker ----------
+  const QUARTER = Math.PI / 4, HALF_PI = Math.PI / 2;
+  const wrapAngle = (a) => ((((a + QUARTER) % HALF_PI) + HALF_PI) % HALF_PI) - QUARTER;
+  // Smooths raw per-frame detections into a stable lock: a detection must
+  // confirm itself over a few frames before it becomes the lock (one flaky
+  // frame on a busy background must not flash a green box), the lock rides
+  // through brief detection dropouts, and a single disagreeing frame can
+  // never teleport it.
+  function createTracker() {
+    let t = null, cand = null;
+    const CONFIRM = 3, HOLD_MS = 600, CAND_HOLD_MS = 400, A = 0.4;
+    const compat = (tr, det) => Math.hypot(det.cx - tr.cx, det.cy - tr.cy) < tr.size * 0.5
+      && det.size > tr.size * 0.7 && det.size < tr.size * 1.4;
+    const blend = (tr, det, now) => {
+      tr.cx += (det.cx - tr.cx) * A; tr.cy += (det.cy - tr.cy) * A; tr.size += (det.size - tr.size) * A;
+      tr.angle = wrapAngle(tr.angle + wrapAngle((det.angle || 0) - tr.angle) * A);   // square: angles repeat every 90°
+      tr.seen = now; tr.hits++;
+      tr.count = det.count; tr.total = det.total; tr.single = !!det.single;
+    };
+    return {
+      update(det, now) {
+        if (det) {
+          if (t && compat(t, det)) blend(t, det, now);
+          else if (cand && compat(cand, det)) {
+            blend(cand, det, now);
+            if (cand.hits >= CONFIRM) { t = cand; cand = null; }
+          } else {
+            cand = {
+              cx: det.cx, cy: det.cy, size: det.size, angle: det.angle || 0, seen: now, hits: 1,
+              count: det.count, total: det.total, single: !!det.single,
+            };
+          }
+        }
+        if (cand && now - cand.seen > CAND_HOLD_MS) cand = null;
+        if (t && now - t.seen > HOLD_MS) t = null;
+        return t;
+      },
+      get track() { return t; },
+      reset() { t = null; cand = null; },
+    };
   }
 
   // ---------- scan protocol ----------
@@ -4787,6 +4994,7 @@ const SCAN = (() => {
 
   return {
     rgbToHsv, featOf, dist2, hueClass, normalizeCapture, normalizeAll, sampleGrid, downsample2, detectFace,
+    createTracker, wrapAngle,
     PROTO_FACES, faceletIndex, gridN, stepInfo, assignColors, applyToPaint,
     rotateGrid, arrangeLetters, repairOrder, cornersConsistent,
   };
@@ -5033,10 +5241,13 @@ if (typeof window !== 'undefined') window.SCAN = SCAN;
   let pDown = null;
   viewport.addEventListener('pointerdown', (e) => {
     pDown = { x: e.clientX, y: e.clientY, rx, ry, moved: false, target: e.target };
-    viewport.setPointerCapture(e.pointerId);
+    try { viewport.setPointerCapture(e.pointerId); } catch (_) {}
   });
   viewport.addEventListener('pointermove', (e) => {
     if (!pDown) return;
+    // the release happened where we couldn't hear it (outside the window, or
+    // pointer capture failed): a moving mouse with no buttons down ends the drag
+    if (e.pointerType === 'mouse' && e.buttons === 0) { pDown = null; return; }
     const dx = e.clientX - pDown.x, dy = e.clientY - pDown.y;
     if (Math.abs(dx) + Math.abs(dy) > 6) pDown.moved = true;
     if (pDown.moved) {
@@ -5067,6 +5278,8 @@ if (typeof window !== 'undefined') window.SCAN = SCAN;
     pDown = null;
   });
   viewport.addEventListener('pointercancel', () => { pDown = null; });
+  viewport.addEventListener('lostpointercapture', () => { pDown = null; });
+  window.addEventListener('blur', () => { pDown = null; });
 
   // ---------- move animation ----------
   function animDuration() { return Math.max(80, 520 - speedVal * 45); }
@@ -5580,6 +5793,7 @@ if (typeof window !== 'undefined') window.SCAN = SCAN;
     live: false,
     mirror: false, facing: '',      // preview mirrored? (front camera) / camera facing mode
     track: null, frame: 0,          // auto-detected cube square (sample-canvas coords)
+    tracker: SCAN.createTracker(),  // temporal smoothing/locking of detections
     acc: null, startedAt: 0,        // colour accumulator over the stable streak
   };
 
@@ -5601,7 +5815,7 @@ if (typeof window !== 'undefined') window.SCAN = SCAN;
     scan.scanMode = mode;
     scan.step = 0; scan.captures = []; scan.signatures = [];
     scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
-    scan.track = null; scan.frame = 0; scan.acc = null;
+    scan.track = null; scan.tracker.reset(); scan.frame = 0; scan.acc = null;
     scan.mirror = false; scan.facing = '';
     scan.active = true;
     scanEls.overlay.classList.add('on');
@@ -5685,6 +5899,7 @@ if (typeof window !== 'undefined') window.SCAN = SCAN;
     scanEls.video.srcObject = null;
     scan.live = false;
     scan.track = null;
+    scan.tracker.reset();
     scan.source = null;
     scanEls.overlay.classList.remove('on');
     scanEls.photoStage.style.display = 'none';
@@ -5746,28 +5961,18 @@ if (typeof window !== 'undefined') window.SCAN = SCAN;
   }
 
   // ---- cube tracking ----
-  // detectFace runs on a half-size frame; the result is smoothed over time and
-  // dropped once the cube hasn't been seen for a moment.
-  const QUARTER = Math.PI / 4, HALF_PI = Math.PI / 2;
-  const wrapAngle = (a) => ((((a + QUARTER) % HALF_PI) + HALF_PI) % HALF_PI) - QUARTER;
+  // detectFace runs on a half-size frame; SCAN.createTracker turns the raw
+  // per-frame detections into a stable lock (confirm over a few frames,
+  // survive brief dropouts, never teleport on one disagreeing frame).
   function updateTrack(fr, n, now) {
     const small = SCAN.downsample2(fr.px);
     const t = scan.track;
     const prefer = t ? { x: t.cx / 2, y: t.cy / 2 } : { x: small.width / 2, y: small.height / 2 };
     const det = SCAN.detectFace(small, n, { prefer });
-    if (det) {
-      const cx = det.cx * 2, cy = det.cy * 2, size = det.size * 2;
-      if (t && Math.hypot(cx - t.cx, cy - t.cy) < t.size * 0.5 && size > t.size * 0.7 && size < t.size * 1.4) {
-        const a = 0.4;
-        t.cx += (cx - t.cx) * a; t.cy += (cy - t.cy) * a; t.size += (size - t.size) * a;
-        t.angle = wrapAngle(t.angle + wrapAngle(det.angle - t.angle) * a);  // square: angles repeat every 90°
-      } else {
-        scan.track = { cx, cy, size, angle: det.angle };
-      }
-      Object.assign(scan.track, { seen: now, count: det.count, total: det.total, single: !!det.single });
-    } else if (t && now - t.seen > 600) {
-      scan.track = null;
-    }
+    scan.track = scan.tracker.update(det && {
+      cx: det.cx * 2, cy: det.cy * 2, size: det.size * 2, angle: det.angle,
+      count: det.count, total: det.total, single: det.single,
+    }, now);
   }
   // the square currently used for sampling, in sample-canvas coords
   function currentRect(f) {
@@ -5862,10 +6067,12 @@ if (typeof window !== 'undefined') window.SCAN = SCAN;
       const lastSig = scan.signatures.length ? scan.signatures[scan.signatures.length - 1] : null;
       if (lastSig !== null && (sig !== lastSig || !tracked)) scan.movedSinceCapture = true;
       const dup = lastSig !== null && sig === lastSig && !scan.movedSinceCapture;
-      // a sticker-lattice lock already proves the dark gaps; a plain square or the
-      // default frame still has to show a dark grid before it auto-captures
+      // auto-capture only arms while the cube is genuinely locked: a sticker-
+      // lattice lock proves the dark gaps by itself, a plain-face lock (solved /
+      // single-colour face) still has to show them. The untracked fallback
+      // guide square NEVER auto-captures — manual capture covers it.
       const latticeLock = tracked && !scan.track.single;
-      const gates = allKnown && calm && !dup && (latticeLock || bordered);
+      const gates = allKnown && calm && !dup && tracked && (latticeLock || bordered);
       if (sig === scan.lastSig && gates) scan.stable++;
       else scan.stable = gates ? 1 : 0;
       scan.lastSig = sig;
@@ -5901,7 +6108,7 @@ if (typeof window !== 'undefined') window.SCAN = SCAN;
         : t.single ? '✓ Cube found — plain face' : `✓ Cube locked · ${t.count}/${t.total} stickers`;
       drawPill(ctx, status, gcx, Math.min(draw.height - 150, gcy + s * 0.72 + 30));
       // stability arc
-      const NEED = tracked ? 10 : 16;
+      const NEED = 10;
       if (scan.stable > 0 && now >= scan.cooldownUntil) {
         ctx.beginPath();
         ctx.strokeStyle = '#3ddc84';
@@ -6143,7 +6350,7 @@ if (typeof window !== 'undefined') window.SCAN = SCAN;
       scan.scanMode = mode;
       scan.step = 0; scan.captures = []; scan.signatures = [];
       scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
-      scan.track = null; scan.frame = 0; scan.acc = null;
+      scan.track = null; scan.tracker.reset(); scan.frame = 0; scan.acc = null;
       scan.active = true;
       scanEls.overlay.classList.add('on');
       scanEls.photoStage.style.display = 'none';
@@ -6158,7 +6365,7 @@ if (typeof window !== 'undefined') window.SCAN = SCAN;
       scan.scanMode = mode;
       scan.step = 0; scan.captures = []; scan.signatures = [];
       scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
-      scan.track = null; scan.frame = 0; scan.acc = null;
+      scan.track = null; scan.tracker.reset(); scan.frame = 0; scan.acc = null;
       scan.active = true; scan.live = true; scan.source = canvas;
       scan.mirror = !!o.mirror; scan.startedAt = performance.now();
       scanEls.overlay.classList.add('on');
