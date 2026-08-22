@@ -176,6 +176,12 @@
   function buildCube() {
     clearCube();
     computeS();
+    // Uniform cubes hide their interior faces at rest (they're occluded
+    // anyway): iPad Safari's 3D compositor mis-sorts large plane counts,
+    // drawing dark interior wedges over the stickers. The faces reappear
+    // while a layer turns, so turns still show the cube's inside. Mirror
+    // cubes keep all faces — their varied piece sizes expose body faces.
+    cubeEl.classList.toggle('occlude', mode !== 'm');
     if (mode === '3') {
       for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
         if (!x && !y && !z) continue;
@@ -408,6 +414,7 @@
       const pivot = useCut
         ? `translate3d(${px}px, ${py}px, ${pz}px) rotate3d(${axis[0]}, ${axis[1]}, ${axis[2]}, ${angle}deg) translate3d(${-px}px, ${-py}px, ${-pz}px) `
         : `rotate3d(${axis[0]}, ${axis[1]}, ${axis[2]}, ${angle}deg) `;
+      cubeEl.classList.add('turning');
       affected.forEach((el) => {
         el.style.transition = `transform ${dur}ms cubic-bezier(0.35, 0, 0.25, 1)`;
         el.style.transform = pivot + el.dataset.base;
@@ -418,6 +425,7 @@
         render();
         for (const k in cubies) cubies[k].el.style.transform = cubies[k].el.dataset.base;
         void cubeEl.offsetWidth;
+        cubeEl.classList.remove('turning');
         resolve();
       }, dur + 30);
     });

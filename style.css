@@ -112,6 +112,12 @@
     border-color: #131313;
   }
   .cf.mirrorbody { background: #17181d; border-color: #0b0b0e; }
+  /* interior faces are hidden at rest (occluded anyway): Safari's 3D
+     compositor mis-sorts large plane counts and paints dark interior wedges
+     over the stickers, so the fewer planes, the better. They come back
+     while a layer is turning, which is the only time they can be seen. */
+  .cube.occlude .cf:not(.sticker) { visibility: hidden; }
+  .cube.occlude.turning .cf:not(.sticker) { visibility: visible; }
   /* shape rect shown while painting the mirror cube */
   .shaperect {
     position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
