@@ -1,5 +1,9 @@
   :root {
     --bg1: #0d1023;
+    --bg2: #232a5c;
+    --bar: rgba(13, 16, 35, 0.94);
+    --swatch-bg: #191c33;
+    --footer: #565d85;
     --card: rgba(255, 255, 255, 0.06);
     --card-border: rgba(255, 255, 255, 0.10);
     --text: #eef0ff;
@@ -23,7 +27,7 @@
   html, body { height: 100%; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: radial-gradient(1200px 800px at 20% -10%, #232a5c 0%, var(--bg1) 55%), var(--bg1);
+    background: radial-gradient(1200px 800px at 20% -10%, var(--bg2) 0%, var(--bg1) 55%), var(--bg1);
     color: var(--text);
     min-height: 100%;
     overscroll-behavior-y: none;
@@ -62,7 +66,7 @@
     .tab { flex: 1 1 0; text-align: center; padding: 10px 4px; }
     .stage3d {
       position: sticky; top: 6px; z-index: 10;
-      background: linear-gradient(rgba(255,255,255,0.06), rgba(255,255,255,0.06)), rgba(13,16,35,0.94);
+      background: linear-gradient(var(--card), var(--card)), var(--bar);
       backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
       box-shadow: 0 10px 30px rgba(0,0,0,0.45);
     }
@@ -77,7 +81,7 @@
     /* the play controls stay pinned right under the cube during playback */
     #solution .playbar {
       position: sticky; top: calc(38vh + 52px); z-index: 9;
-      background: linear-gradient(rgba(255,255,255,0.06), rgba(255,255,255,0.06)), rgba(13,16,35,0.94);
+      background: linear-gradient(var(--card), var(--card)), var(--bar);
       backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
       padding: 6px; margin: -6px -6px 0; border-radius: 14px;
     }
@@ -137,7 +141,7 @@
     cursor: pointer; position: relative; flex: 0 0 auto;
     transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s;
     display: flex; align-items: center; justify-content: center;
-    background: #191c33;
+    background: var(--swatch-bg);
   }
   .swatch.sel { border-color: #fff; transform: scale(1.12); box-shadow: 0 0 0 3px rgba(255,255,255,0.18), 0 4px 14px rgba(0,0,0,0.4); }
   .swatch[data-c="X"], .swatch[data-shape="X"] { background: var(--c-X); background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.08) 0 5px, transparent 5px 10px); }
@@ -288,4 +292,79 @@
   details.notation { color: var(--muted); font-size: 12.5px; }
   details.notation summary { cursor: pointer; font-weight: 600; }
   details.notation p { margin-top: 6px; line-height: 1.5; }
-  footer { text-align: center; color: #565d85; font-size: 11.5px; margin-top: 26px; }
+  footer { text-align: center; color: var(--footer); font-size: 11.5px; margin-top: 26px; }
+
+  /* ---- theme previews (?theme=pro | ?theme=light in the URL) ----
+     The default look stays as-is; these override only what each theme
+     changes. The fullscreen camera overlay is deliberately untouched. */
+
+  /* "pro": refined dark — flat graphite surfaces, one restrained accent,
+     squarer corners, no glows */
+  html[data-theme="pro"] {
+    --bg1: #0e1013;
+    --bg2: #131519;
+    --card: #16181d;
+    --card-border: #24272e;
+    --text: #e7e9ec;
+    --muted: #8d95a3;
+    --accent: #3d7eff;
+    --accent2: #3d7eff;
+    --chip: #1e2128;
+    --bar: rgba(14, 16, 19, 0.92);
+    --swatch-bg: #1b1e24;
+    --footer: #596070;
+    --c-X: #2c3038;
+  }
+  html[data-theme="pro"] body { background: var(--bg1); }
+  html[data-theme="pro"] header h1 .grad { background: none; color: var(--text); }
+  html[data-theme="pro"] .tab { border-radius: 10px; }
+  html[data-theme="pro"] .tab.on { box-shadow: none; }
+  html[data-theme="pro"] .stage3d, html[data-theme="pro"] .card { border-radius: 14px; }
+  html[data-theme="pro"] button.btn.primary,
+  html[data-theme="pro"] .scanChoiceCard a.btn.primary { box-shadow: none; }
+  html[data-theme="pro"] .mv.cur { box-shadow: none; }
+  html[data-theme="pro"] .swatch { border-color: rgba(255, 255, 255, 0.1); }
+
+  /* "light": clean paper — white cards on pale gray, blue accent,
+     ink text, soft shadows */
+  html[data-theme="light"] {
+    --bg1: #f2f4f7;
+    --bg2: #ffffff;
+    --card: #ffffff;
+    --card-border: #e0e4ea;
+    --text: #1c222e;
+    --muted: #66707f;
+    --accent: #2563eb;
+    --accent2: #4f46e5;
+    --good: #16a34a;
+    --chip: #eef1f5;
+    --bar: rgba(255, 255, 255, 0.92);
+    --swatch-bg: #e9edf2;
+    --footer: #9aa2b1;
+    --c-X: #c9cfd9;
+  }
+  html[data-theme="light"] body { background: var(--bg1); }
+  html[data-theme="light"] .tab.on { box-shadow: 0 2px 10px rgba(37, 99, 235, 0.25); }
+  html[data-theme="light"] .stage3d,
+  html[data-theme="light"] #solution .playbar { box-shadow: 0 8px 24px rgba(20, 30, 60, 0.08); }
+  html[data-theme="light"] .swatch { border-color: rgba(0, 0, 0, 0.12); }
+  html[data-theme="light"] .swatch.sel {
+    border-color: var(--text);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.22), 0 4px 14px rgba(0, 0, 0, 0.15);
+  }
+  html[data-theme="light"] .cf.sticker.blank,
+  html[data-theme="light"] .swatch[data-c="X"], html[data-theme="light"] .swatch[data-shape="X"] {
+    background-image: repeating-linear-gradient(45deg, rgba(0,0,0,0.06) 0 5px, transparent 5px 10px);
+  }
+  html[data-theme="light"] .shaperect.empty { border-color: rgba(0, 0, 0, 0.25); }
+  html[data-theme="light"] .msg.err { background: #fdecec; border-color: #f2b8b5; color: #b3261e; }
+  html[data-theme="light"] .msg.ok { background: #e9f7ef; border-color: #b7e2c7; color: #15803d; }
+  html[data-theme="light"] .stg.active { background: rgba(37, 99, 235, 0.06); border-color: rgba(37, 99, 235, 0.45); }
+  html[data-theme="light"] .stg.done .num { color: #fff; }
+  html[data-theme="light"] .mv.done { color: #15803d; background: rgba(22, 163, 74, 0.12); }
+  html[data-theme="light"] .mv.cur { box-shadow: 0 0 10px rgba(37, 99, 235, 0.35); }
+  html[data-theme="light"] button.btn.primary,
+  html[data-theme="light"] .scanChoiceCard a.btn.primary { box-shadow: 0 4px 14px rgba(37, 99, 235, 0.25); }
+  html[data-theme="light"] .scanChoiceCard { border-color: var(--card-border); }
+  html[data-theme="light"] .scanChoiceTitle { color: var(--text); }
+  html[data-theme="light"] .scanChoiceMsg { color: var(--muted); }
