@@ -159,6 +159,24 @@ function randomFace(n, rand, solved) {
   if (solved) {
     const l = LETTERS[Math.floor(rand() * 6)];
     for (let i = 0; i < n * n; i++) face.push(l);
+  } else if (rand() < 0.15 && n >= 3) {
+    // half-and-half face: two colours split down the middle (common on partial
+    // scrambles). On a gapless cube every tile merges into two big blocks and
+    // there are NO clean single tiles to seed a lattice from.
+    const a = Math.floor(rand() * 6);
+    const b = (a + 1 + Math.floor(rand() * 5)) % 6;
+    const vertical = rand() < 0.5;
+    for (let row = 0; row < n; row++) {
+      for (let col = 0; col < n; col++) {
+        const k = vertical ? col : row;
+        face.push(LETTERS[k < n / 2 ? a : b]);
+      }
+    }
+  } else if (rand() < 0.12 && n >= 3) {
+    // near-solved face: one stray tile on an otherwise solid face
+    const dom = LETTERS[Math.floor(rand() * 6)];
+    for (let i = 0; i < n * n; i++) face.push(dom);
+    face[Math.floor(rand() * n * n)] = LETTERS[Math.floor(rand() * 6)];
   } else if (rand() < 0.4 && n >= 3) {
     // colour-heavy face: one colour dominates (5-7 of 9 on a 3×3) — common on
     // real scrambles and the hard case for gapless cubes, where same-colour
@@ -196,7 +214,7 @@ function makeScenarios(seed) {
     }
     return rects;
   };
-  for (const n of [3, 2]) {
+  for (const n of [3, 4, 2]) {
     for (const scale of scales) {
       for (const angleDeg of angles) {
         for (const background of backgrounds) {
@@ -366,6 +384,7 @@ if (asJson) {
       const c = {};
       let m = 0;
       for (const l of s.face) { c[l] = (c[l] || 0) + 1; if (c[l] > m) m = c[l]; }
+      if (Object.keys(c).length === 2 && m === s.n * s.n / 2) return s.style + ':half';
       return m >= s.n * s.n * 0.55 ? s.style + ':heavy' : s.style + ':mixed';
     }],
     ['solved faces', (s) => (s.solved ? 'solved' : 'mixed')],
