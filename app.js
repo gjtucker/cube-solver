@@ -206,6 +206,26 @@
     } catch (_) { return null; }
   }
   const savedState = loadState();
+  // a shared-cube link (#c=<base64url JSON>) overrides the saved workspace:
+  // whoever opens it should see exactly the cube that was shared
+  function parseShareHash() {
+    if (!location.hash.startsWith('#c=')) return null;
+    try {
+      const b64 = location.hash.slice(3).replace(/-/g, '+').replace(/_/g, '/');
+      const s = JSON.parse(atob(b64));
+      if (!['3', '4', '2', 'm'].includes(s.m)) return null;
+      if (!Array.isArray(s.p) || s.p.length !== data[s.m].paint.length) return null;
+      if (!s.p.every((v) => typeof v === 'number' || (typeof v === 'string' && v.length <= 2))) return null;
+      return s;
+    } catch (_) { return null; }
+  }
+  const sharedCube = parseShareHash();
+  if (sharedCube) {
+    mode = sharedCube.m;
+    data[mode].paint = sharedCube.p;
+    // drop the hash so a later refresh keeps the user's own edits
+    history.replaceState(null, '', location.pathname + location.search);
+  }
   window.addEventListener('pagehide', () => { if (dirty) saveStateNow(); });
   document.addEventListener('visibilitychange', () => { if (dirty && document.visibilityState === 'hidden') saveStateNow(); });
 
@@ -952,10 +972,56 @@
     updatePlaybackUI();
   });
 
+  // ---------- theme toggle ----------
+  const themeBtn = document.getElementById('themeToggle');
+  const applyTheme = (t) => {
+    document.documentElement.dataset.theme = t;
+    const mtc = document.querySelector('meta[name="theme-color"]');
+    if (mtc) mtc.content = t === 'light' ? '#f2f4f7' : '#0e1013';
+    themeBtn.textContent = t === 'light' ? '🌙' : '☀️';
+  };
+  applyTheme(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+  themeBtn.addEventListener('click', () => {
+    const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+    applyTheme(t);
+    try { localStorage.setItem('cubeTheme', t); } catch (_) {}
+  });
+
+  // ---------- share & copy ----------
+  async function copyText(txt) {
+    try {
+      await navigator.clipboard.writeText(txt);
+      return true;
+    } catch (_) {
+      const ta = document.createElement('textarea');
+      ta.value = txt;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (_) {}
+      ta.remove();
+      return ok;
+    }
+  }
+  document.getElementById('btnShare').addEventListener('click', async () => {
+    const payload = btoa(JSON.stringify({ m: mode, p: data[mode].paint }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const url = `${location.origin}${location.pathname}#c=${payload}`;
+    const ok = await copyText(url);
+    showMsg(ok ? 'Link copied — anyone who opens it gets this exact cube.' : url, 'ok');
+  });
+  document.getElementById('btnCopyMoves').addEventListener('click', async () => {
+    if (!solution) return;
+    const ok = await copyText(solution.moves.join(' '));
+    showMsg(ok ? `Copied all ${solution.moves.length} moves.` : 'Copy failed — your browser blocked clipboard access.', ok ? 'ok' : 'err');
+  });
+
   // ---------- init ----------
   // sync the static markup with any restored state before the first paint
   // (howto/hint text is already set from the restored mode further up)
-  if (savedState) {
+  if (savedState || sharedCube) {
     document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
     document.querySelectorAll('.segbtn').forEach((x) => x.classList.toggle('on', x.dataset.method === method));
     document.getElementById('speed').value = speedVal;
@@ -965,7 +1031,7 @@
   render();
   // resume an in-progress solution at the exact move it was left on.
   // enterPlayback resets pbState to baseState, so advance it afterwards.
-  if (savedState && savedState.playback && savedState.playback.solution
+  if (!sharedCube && savedState && savedState.playback && savedState.playback.solution
       && Array.isArray(savedState.playback.solution.moves) && Array.isArray(savedState.playback.baseState)) {
     try {
       solution = savedState.playback.solution;
@@ -984,6 +1050,7 @@
       render();
     }
   }
+  if (sharedCube) showMsg('Loaded a shared cube — hit “Solve my cube” to see the solution.', 'ok');
   booted = true;
   window.addEventListener('resize', () => { buildCube(); render(); });
 

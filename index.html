@@ -3,21 +3,24 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Cube Solver — Rubik's Cube &amp; Mirror Cube, step by step</title>
-<meta name="description" content="Free Rubik's cube solver: scan your cube with the camera (stickered or stickerless) and follow a step-by-step 3D solution. Solves 3×3, 4×4, 2×2 and Mirror cubes — no app, no sign-up.">
+<title>Cubely — Rubik's Cube Solver: scan your cube, follow the 3D solution</title>
+<meta name="description" content="Cubely is a free Rubik's cube solver: scan your cube with the camera (stickered or stickerless) and follow a step-by-step 3D solution. Solves 3×3, 4×4, 2×2 and Mirror cubes — no ads, no app, no sign-up.">
 <link rel="canonical" href="https://gjtucker.github.io/cube-solver/">
-<meta name="theme-color" content="#0d1023">
+<meta name="theme-color" content="#0e1013">
 <meta property="og:type" content="website">
-<meta property="og:title" content="Cube Solver — scan your cube, follow the solution">
-<meta property="og:description" content="Scan your Rubik's cube with the camera and follow a step-by-step 3D solution. 3×3 · 4×4 · 2×2 · Mirror — free, no app, no sign-up.">
+<meta property="og:title" content="Cubely — scan your cube, follow the solution">
+<meta property="og:description" content="Scan your Rubik's cube with the camera and follow a step-by-step 3D solution. 3×3 · 4×4 · 2×2 · Mirror — free, no ads, no app, no sign-up.">
 <meta property="og:url" content="https://gjtucker.github.io/cube-solver/">
 <meta property="og:image" content="https://gjtucker.github.io/cube-solver/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Cube Solver — scan your cube, follow the solution">
-<meta name="twitter:description" content="Scan your Rubik's cube with the camera and follow a step-by-step 3D solution. 3×3 · 4×4 · 2×2 · Mirror — free.">
+<meta name="twitter:title" content="Cubely — scan your cube, follow the solution">
+<meta name="twitter:description" content="Scan your Rubik's cube with the camera and follow a step-by-step 3D solution. 3×3 · 4×4 · 2×2 · Mirror — free, no ads.">
 <meta name="twitter:image" content="https://gjtucker.github.io/cube-solver/og-image.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
 <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -26,7 +29,8 @@
 {
   "@context": "https://schema.org",
   "@type": "WebApplication",
-  "name": "Cube Solver",
+  "name": "Cubely",
+  "alternateName": "Cubely Cube Solver",
   "url": "https://gjtucker.github.io/cube-solver/",
   "description": "Scan your Rubik's cube with the camera and follow a step-by-step 3D solution. Solves 3×3, 4×4, 2×2 and Mirror cubes in the browser.",
   "applicationCategory": "GameApplication",
@@ -36,11 +40,20 @@
 }
 </script>
 <script>
-// theme preview: ?theme=pro (refined dark) or ?theme=light (clean light);
-// set before the stylesheet loads so there is no flash of the default look
+// theme: ?theme=dark|light (pro = dark) > saved choice > system preference.
+// Resolved before the stylesheet loads so there is no flash of the wrong look.
 (() => {
-  const t = new URLSearchParams(location.search).get('theme');
-  if (t === 'pro' || t === 'light') document.documentElement.dataset.theme = t;
+  let t = new URLSearchParams(location.search).get('theme');
+  if (t === 'pro') t = 'dark';
+  if (t !== 'dark' && t !== 'light') {
+    try { t = localStorage.getItem('cubeTheme'); } catch (_) {}
+  }
+  if (t !== 'dark' && t !== 'light') {
+    t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+  document.documentElement.dataset.theme = t;
+  const m = document.querySelector('meta[name="theme-color"]');
+  if (m) m.content = t === 'light' ? '#f2f4f7' : '#0e1013';
 })();
 </script>
 <link rel="stylesheet" href="style.css">
@@ -49,8 +62,16 @@
 <div class="wrap">
   <div class="topbar">
     <header>
-      <h1>🧩 <span class="grad">Cube Solver</span></h1>
-      <span class="sub">Paint your cube · get a step-by-step solution</span>
+      <h1>
+        <svg class="logomark" viewBox="0 0 512 512" aria-hidden="true">
+          <rect x="60" y="60" width="180" height="180" rx="38" fill="#ffd500"/>
+          <rect x="272" y="60" width="180" height="180" rx="38" fill="#00a651"/>
+          <rect x="60" y="272" width="180" height="180" rx="38" fill="#ff7a00"/>
+          <rect x="272" y="272" width="180" height="180" rx="38" fill="#1163d8"/>
+        </svg>
+        <span class="brand">Cubely</span>
+      </h1>
+      <span class="sub">Scan your cube · follow the 3D solution</span>
     </header>
 
     <div class="tabs">
@@ -58,6 +79,7 @@
       <button class="tab" data-mode="4">4×4</button>
       <button class="tab" data-mode="2">2×2</button>
       <button class="tab" data-mode="m">Mirror 2×2</button>
+      <button class="themebtn" id="themeToggle" aria-label="Switch between light and dark theme"></button>
     </div>
   </div>
 
@@ -77,6 +99,7 @@
           <button class="btn" id="btnReset">Solved cube</button>
           <button class="btn" id="btnClear">Clear</button>
           <button class="btn" id="btnScramble">Random scramble</button>
+          <button class="btn" id="btnShare">🔗 Share</button>
         </div>
       </div>
 
@@ -96,7 +119,10 @@
       </div>
 
       <div class="card" id="solution">
-        <h2>3 · Follow the solution</h2>
+        <div class="cardhead">
+          <h2>3 · Follow the solution</h2>
+          <button class="btn ghost mini" id="btnCopyMoves" title="Copy the full move sequence">⧉ Copy moves</button>
+        </div>
         <div class="playbar">
           <button class="pb" id="pbStart" title="Back to start">⏮</button>
           <button class="pb" id="pbBack" title="Step back">◀</button>

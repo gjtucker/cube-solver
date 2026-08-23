@@ -1,10 +1,10 @@
-# 🧩 Cube Solver
+# Cubely
 
-**[gjtucker.github.io/cube-solver](https://gjtucker.github.io/cube-solver/)** — free, no app, no sign-up.
+**[gjtucker.github.io/cube-solver](https://gjtucker.github.io/cube-solver/)** — a free Rubik's cube solver. No ads, no app, no sign-up.
 
-Scan your Rubik's cube with the camera and follow a step-by-step 3D solution, right in the browser. Installable as an app (Add to Home Screen) and works offline.
+Scan your cube with the camera and follow a step-by-step 3D solution, right in the browser. Installable as an app (Add to Home Screen) and works offline.
 
-![Cube Solver](og-image.png)
+![Cubely](og-image.png)
 
 ## Features
 
@@ -46,6 +46,6 @@ node tests/solve4-harness.mjs            # 4×4 solver: move count + wall time
 node tests/solve4-harness.mjs --hard     # the "Search harder" deep mode
 ```
 
-## Theme previews
+## Themes
 
-Add `?theme=pro` (refined dark) or `?theme=light` (clean light) to the URL to preview alternative looks.
+Cubely follows your system's light/dark preference; the toggle in the header (persisted per browser) or `?theme=dark` / `?theme=light` in the URL overrides it.
