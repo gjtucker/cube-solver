@@ -556,7 +556,7 @@ const SCAN = (() => {
       // none of the four tiles. A flat mosaic background has flush square
       // corners: every junction pixel belongs to one of its tiles.
       let notched = 0, junctions = 0;
-      const notchCols = [];
+      const notchCols = [], notchRel = [];
       for (let i = 0; i + 1 < n; i++) {
         for (let j = 0; j + 1 < n; j++) {
           const c00 = cells[i * n + j], c10 = cells[(i + 1) * n + j];
@@ -587,22 +587,31 @@ const SCAN = (() => {
               if (m > worst) { worst = m; wp = p; }
             }
           }
-          if (worst > 65 && m00 + m10 + m01 + m11 >= 2) { notched++; notchCols.push(wp); }
+          if (worst > 65 && m00 + m10 + m01 + m11 >= 2) {
+            notched++;
+            notchCols.push(wp);
+            // darkness relative to this junction's own four tiles — glare and
+            // lighting gradients shift absolute brightness across the face,
+            // but a plastic notch stays darker than its local surroundings
+            const lm = (Math.max(c00[0], c00[1], c00[2]) + Math.max(c10[0], c10[1], c10[2])
+              + Math.max(c01[0], c01[1], c01[2]) + Math.max(c11[0], c11[1], c11[2])) / 4;
+            notchRel.push(Math.max(wp[0], wp[1], wp[2]) / Math.max(1, lm));
+          }
         }
       }
-      // real notches are the cube's inner plastic: all dark, or at least all
-      // one colour. A random third tile of a cluttered background peeking
-      // through a junction is neither.
+      // real notches are the cube's inner plastic: all locally dark, or at
+      // least all one colour. A random third tile of a cluttered background
+      // peeking through a junction is neither.
       let cornerConsistent = true;
       if (notchCols.length >= 2) {
-        const dark = notchCols.filter((g) => Math.max(g[0], g[1], g[2]) < meanCellMax * 0.55).length;
+        const dark = notchRel.filter((r) => r < 0.6).length;
         const med = [0, 1, 2].map((k) => notchCols.map((g) => g[k]).sort((x, y) => x - y)[notchCols.length >> 1]);
         const near = notchCols.filter((g) => l1(g, med) < 60).length;
         cornerConsistent = dark >= notchCols.length * 0.75 || near >= notchCols.length * 0.75;
       } else if (notchCols.length === 1) {
         // a lone junction (2×2) can't vote on consistency — accept only the
         // classic dark-plastic notch, not an arbitrary alien colour
-        cornerConsistent = Math.max(notchCols[0][0], notchCols[0][1], notchCols[0][2]) < meanCellMax * 0.55;
+        cornerConsistent = notchRel[0] < 0.6;
       }
       return {
         seam: checked ? seamed / checked : 0,
@@ -738,6 +747,88 @@ const SCAN = (() => {
       delete best.score;
       delete best.evidence;
       return best;
+    }
+
+    // A face with NO clean single tiles never enters the seed loop at all —
+    // e.g. a 4×4 gapless face that is half one colour, half another: every
+    // tile merges into two big blocks and there is nothing to seed from.
+    // Build a candidate from the union of the cube-coloured merged blocks:
+    // orient by the largest block's lattice-aligned bounding box, take the
+    // union's rotated bounding square, and demand the same physical evidence
+    // (seams or corner notches, repeated colours) as any seeded fit.
+    function rotBounds(b, ca, sa) {
+      let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+      for (let y = b.miny; y <= b.maxy; y++) {
+        for (let x = b.minx; x <= b.maxx; x++) {
+          if (label[y * W + x] !== b.id) continue;
+          const u = ca * x + sa * y, v = -sa * x + ca * y;
+          if (u < u0) u0 = u;
+          if (u > u1) u1 = u;
+          if (v < v0) v0 = v;
+          if (v > v1) v1 = v;
+        }
+      }
+      return [u0, u1, v0, v1];
+    }
+    const bigMerged = mergedAll.filter((b) => !b.edge && b.side > minDim * 0.08);
+    const unionLog = opts.debug ? (opts.debug.unionTries = []) : null;
+    let uBest = null;
+    for (const anchor of bigMerged.slice().sort((a, b) => b.area - a.area).slice(0, 8)) {
+      const ang = blobAngle(anchor);
+      if (ang === null) continue;
+      const ca = Math.cos(ang), sa = Math.sin(ang);
+      const bounds = new Map();
+      const boundsOf = (b) => {
+        let r = bounds.get(b);
+        if (!r) { r = rotBounds(b, ca, sa); bounds.set(b, r); }
+        return r;
+      };
+      // grow the union by adjacency: a face's blocks touch each other, while
+      // desk clutter around the cube stands apart (and a mosaic wall chains
+      // on forever, blowing the square check below)
+      const members = new Set([anchor]);
+      let [u0, u1, v0, v1] = boundsOf(anchor);
+      let unionArea = anchor.area, grew = true;
+      const gapTol = anchor.side * 0.12;
+      while (grew) {
+        grew = false;
+        for (const b of bigMerged) {
+          if (members.has(b)) continue;
+          const [bu0, bu1, bv0, bv1] = boundsOf(b);
+          if (bu0 > u1 + gapTol || bu1 < u0 - gapTol || bv0 > v1 + gapTol || bv1 < v0 - gapTol) continue;
+          members.add(b);
+          if (bu0 < u0) u0 = bu0;
+          if (bu1 > u1) u1 = bu1;
+          if (bv0 < v0) v0 = bv0;
+          if (bv1 > v1) v1 = bv1;
+          unionArea += b.area;
+          grew = true;
+        }
+      }
+      const w = u1 - u0 + 1, h = v1 - v0 + 1;
+      if (unionLog) unionLog.push({ w, h, ratio: w / h, fill: unionArea / (w * h), ang });
+      if (!(w / h > 0.8 && w / h < 1.25 && unionArea / (w * h) > 0.75
+        && Math.min(w, h) > minDim * 0.11 && Math.max(w, h) < minDim * 0.95)) continue;
+      const size = (w + h) / 2;
+      const cu = (u0 + u1) / 2, cv = (v0 + v1) / 2;
+      const ucx = ca * cu - sa * cv, ucy = sa * cu + ca * cv;
+      const fit = { cx: ucx, cy: ucy, x: ucx - size / 2, y: ucy - size / 2, size, angle: ang, count: 0, total: n * n };
+      const st = faceStats(fit);
+      if (unionLog) unionLog[unionLog.length - 1].st = st;
+      const seamsOK = st.seam >= 0.5 && st.seamConsistent;
+      const cornersOK = st.corner >= 0.5 && st.cornerConsistent;
+      if ((!seamsOK && !cornersOK) || (n >= 3 && st.repeats < 2)) continue;
+      const evidence = Math.max(seamsOK ? st.seam : 0, st.corner);
+      const score = (0.25 + evidence) * (0.4 + 0.6 * st.cubeFrac)
+        * (0.7 + 0.075 * Math.min(4, st.repeats))
+        - Math.hypot(ucx - pref.x, ucy - pref.y) / (4 * minDim);
+      if (opts.debug) fit.st = st;
+      if (!uBest || score > uBest.score) uBest = Object.assign(fit, { score });
+    }
+    if (uBest) {
+      if (opts.debug) opts.debug.union = uBest;
+      delete uBest.score;
+      return uBest;
     }
 
     // fallback: one big, solid, square, cube-coloured blob without a crowd of

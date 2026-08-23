@@ -1323,10 +1323,14 @@
       if (lastSig !== null && (ham(sig, lastSig) > 1 || !tracked)) scan.movedSinceCapture = true;
       // on a 3×3/4×4 every face is captured exactly once, so a reading that
       // matches ANY earlier capture is a re-show of a face already taken —
-      // block it however the cube moved in between. (A 2×2 can genuinely
-      // repeat a pattern, so there only the just-captured face is blocked.)
+      // block it however the cube moved in between. On a 3×3 the centre
+      // identifies the face, so a match whose centre differs is NOT a
+      // re-show — it is a genuinely different face that happens to share
+      // the pattern (one-cell tolerance would otherwise eat the centre).
+      // (A 2×2 can repeat a whole pattern, so there only the just-captured
+      // face is blocked.)
       const dup = n >= 3
-        ? scan.signatures.some((prev) => ham(sig, prev) <= 1)
+        ? scan.signatures.some((prev) => ham(sig, prev) <= 1 && (n !== 3 || prev[4] === sig[4]))
         : lastSig !== null && ham(sig, lastSig) <= 1 && !scan.movedSinceCapture;
       // the 3×3 protocol dictates which centre each step shows (green, orange,
       // blue, red, yellow, white) — refuse to auto-capture a face whose centre
@@ -1360,7 +1364,7 @@
       }
       const info = SCAN.stepInfo(scan.scanMode, Math.min(scan.step, 5), { mirror: scan.mirror });
       const hint = dup && allKnown && calm
-        ? 'This looks like a face you already scanned — move on to the next one.'
+        ? 'This looks like a face you already scanned — show the next one (or, if it really is a different face that just looks the same, use Capture now).'
         : !centerOK && allKnown && calm && tracked
           ? `That looks like the ${COLOR_NAMES[centerRead]} face — show the ${COLOR_NAMES[expected]} one now (or use Capture now to override).`
           : info.hint;

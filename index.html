@@ -4,6 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Cube Solver — Rubik's Cube &amp; Mirror Cube, step by step</title>
+<script>
+// theme preview: ?theme=pro (refined dark) or ?theme=light (clean light);
+// set before the stylesheet loads so there is no flash of the default look
+(() => {
+  const t = new URLSearchParams(location.search).get('theme');
+  if (t === 'pro' || t === 'light') document.documentElement.dataset.theme = t;
+})();
+</script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
