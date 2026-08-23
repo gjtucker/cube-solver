@@ -987,6 +987,12 @@
   booted = true;
   window.addEventListener('resize', () => { buildCube(); render(); });
 
+  // installable + offline (GitHub Pages is https; localhost keeps tests honest)
+  if ('serviceWorker' in navigator
+    && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+
   // gentle idle wobble
   let idleT = 0;
   function idle() {
