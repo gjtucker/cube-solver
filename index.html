@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CubeSnap — Rubik's Cube Solver: scan your cube, follow the 3D solution</title>
 <meta name="description" content="CubeSnap is a free Rubik's cube solver: scan your cube with the camera (stickered or stickerless) and follow a step-by-step 3D solution. Solves 3×3, 4×4, 2×2 and Mirror cubes — no ads, no app, no sign-up.">
 <link rel="canonical" href="https://gjtucker.github.io/cube-solver/">
@@ -20,7 +20,7 @@
 <meta name="twitter:image" content="https://gjtucker.github.io/cube-solver/og-image.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" crossorigin>
 <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -159,8 +159,9 @@
             An apostrophe (<b>R'</b>) = counter-clockwise. A two (<b>R2</b>) = half turn.<br><br>
             On the 4×4, a <b>lowercase</b> letter (<b>r</b>) means the <i>inner slice</i> next to that
             face — just the single inside layer, not the outer face.<br><br>
-            On the 2×2 and mirror cube, solutions never turn the Back or Left faces —
-            the back-bottom-left piece stays still, so use it as your anchor.
+            On the 2×2 and mirror cube, solutions never turn the Back or Left faces,
+            and the back-bottom-left piece is back in place at the end of every
+            stage — use it as your anchor.
           </p>
         </details>
       </div>
