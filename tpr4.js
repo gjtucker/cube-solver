@@ -11,7 +11,9 @@
 //            double slices only):  edges, via guided search scored by exact
 //                                  sub-tables (center-sort 70^3, two-pair joint).
 //
-// All tables are generated on-device at first use (~1.4 MB total, no shipped data).
+// Tables ship pre-built (tables/tpr4-v1.bin.gz, ~228 KB gzipped; regenerate
+// with tools/gen-tables.mjs) and are fetched at page load; generating them
+// on-device (~10 s) remains the fallback when the download is unavailable.
 
 const C4t = typeof module !== 'undefined' ? require('./cube4.js') : globalThis.Cube4;
 

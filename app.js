@@ -166,6 +166,12 @@
   let playing = false;
   let speedVal = 5;
   let viewMode = '3d';  // '3d' | 'net' — how the cube is shown while painting
+  let scrambling = false;  // a scramble or pattern animation owns the cube
+  let shareVirgin = false; // a shared cube is on screen but not yet adopted:
+                           // nothing persists (so merely viewing a link can
+                           // never wipe the saved workspace) until the user
+                           // genuinely acts on it — paints, clears, scrambles,
+                           // applies a pattern, or solves
 
   // ---------- persistence: the workspace survives refreshes ----------
   // Saved per browser: every mode's paint, the active tab, solve method,
@@ -186,7 +192,7 @@
   let booted = false;   // pagehide — a stale background tab would clobber a
                         // fresher tab's save (last-writer-wins store)
   function saveState() {
-    if (!booted) return;
+    if (!booted || shareVirgin) return;
     dirty = true;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(saveStateNow, 250);
@@ -225,6 +231,7 @@
   if (sharedCube) {
     mode = sharedCube.m;
     data[mode].paint = sharedCube.p;
+    shareVirgin = true;
     // drop the hash so a later refresh keeps the user's own edits
     history.replaceState(null, '', location.pathname + location.search);
   }
@@ -336,8 +343,12 @@
   }
 
   // ---------- rendering ----------
-  function render() {
-    saveState();
+  // save defaults to true: every state mutation flows through render(). Pass
+  // false for redraws that reflect no user change (window resize) — otherwise
+  // merely rotating the phone would persist state the user never touched
+  // (e.g. adopt a just-opened share link over their saved workspace).
+  function render(save = true) {
+    if (save) saveState();
     if (mode === 'm') {
       if (mirrorGeo && pbState) renderMirrorGeo(pbState);
       else renderMirrorPaint();
@@ -347,7 +358,9 @@
     for (const idx in stickerEls) {
       const el = stickerEls[idx];
       const c = st[idx];
-      el.style.background = COLORS[c] || COLORS.X;
+      // backgroundColor, not the shorthand — the shorthand would wipe the
+      // .blank class's hatch background-image
+      el.style.backgroundColor = COLORS[c] || COLORS.X;
       el.classList.toggle('blank', c === 'X');
       el.classList.remove('gold', 'mirrorbody');
       el.innerHTML = '';
@@ -388,8 +401,9 @@
           cell.className = 'netcell';
           if (mode === '3' && idx % 9 === 4) cell.classList.add('lock');
           cell.addEventListener('click', () => {
-            if (animating || solution) return;
+            if (animating || scrambling || solution) return;
             if (mode === '3' && idx % 9 === 4) return;   // centers locked
+            shareVirgin = false;
             data[mode].paint[idx] = selColor;
             pbState = null;
             render();
@@ -408,7 +422,7 @@
     for (const idx in netCells) {
       const cell = netCells[idx];
       const c = st[idx];
-      cell.style.background = COLORS[c] || COLORS.X;
+      cell.style.backgroundColor = COLORS[c] || COLORS.X;
       cell.classList.toggle('blank', c === 'X');
     }
   }
@@ -428,6 +442,18 @@
     viewMode = v;
     syncView();
     saveState();
+  }
+  // the phone layout pins the playbar right below the cube panel; measure the
+  // panel's real height instead of guessing in vh (it varies with the hint
+  // line, paddings, and 3D-vs-net view)
+  function updateStickyOffsets() {
+    const stage = document.querySelector('.stage3d');
+    if (stage) document.documentElement.style.setProperty('--stickyTop', (stage.offsetHeight + 10) + 'px');
+  }
+  // the panel's height shifts with fonts loading, hint wrapping, and the
+  // 3D/net views — track it rather than trusting one measurement
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(updateStickyOffsets).observe(document.querySelector('.stage3d'));
   }
   view3dBtn.addEventListener('click', () => setView('3d'));
   viewNetBtn.addEventListener('click', () => setView('net'));
@@ -504,11 +530,12 @@
 
   let pDown = null;
   viewport.addEventListener('pointerdown', (e) => {
-    pDown = { x: e.clientX, y: e.clientY, rx, ry, moved: false, target: e.target };
+    if (pDown) return;   // one finger drives the cube; a second is ignored
+    pDown = { id: e.pointerId, x: e.clientX, y: e.clientY, rx, ry, moved: false, target: e.target };
     try { viewport.setPointerCapture(e.pointerId); } catch (_) {}
   });
   viewport.addEventListener('pointermove', (e) => {
-    if (!pDown) return;
+    if (!pDown || e.pointerId !== pDown.id) return;
     // the release happened where we couldn't hear it (outside the window, or
     // pointer capture failed): a moving mouse with no buttons down ends the drag
     if (e.pointerType === 'mouse' && e.buttons === 0) { pDown = null; return; }
@@ -520,14 +547,16 @@
       applyOrbit();
     }
   });
-  viewport.addEventListener('pointerup', () => {
-    if (pDown && !pDown.moved && !animating && !solution) {
+  viewport.addEventListener('pointerup', (e) => {
+    if (!pDown || e.pointerId !== pDown.id) return;
+    if (!pDown.moved && !animating && !scrambling && !solution) {
       const t = pDown.target;
       const stickerEl = t.classList && t.classList.contains('sticker') ? t
         : t.classList && t.classList.contains('shaperect') ? t.parentElement : null;
       if (stickerEl && stickerEl.dataset.idx !== undefined) {
         const idx = +stickerEl.dataset.idx;
         if (mode === '3' && idx % 9 === 4) { pDown = null; return; } // centers locked
+        shareVirgin = false;
         if (mode === 'm') {
           data.m.paint[idx] = selShape;
           pbState = null;
@@ -544,6 +573,10 @@
   viewport.addEventListener('pointercancel', () => { pDown = null; });
   viewport.addEventListener('lostpointercapture', () => { pDown = null; });
   window.addEventListener('blur', () => { pDown = null; });
+  // belt-and-braces for engines that don't honor an ancestor's
+  // touch-action:none across the 3D-transformed subtree (iOS Safari):
+  // a touch that starts on the cube panel must never scroll the page
+  document.querySelector('.stage3d').addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
 
   // ---------- move animation ----------
   function animDuration() { return Math.max(80, 520 - speedVal * 45); }
@@ -580,12 +613,17 @@
         el.style.transform = pivot + el.dataset.base;
       });
       setTimeout(() => {
-        pbState = ENG().applyMove(pbState, move);
-        affected.forEach((el) => { el.style.transition = 'none'; });
-        render();
-        for (const k in cubies) cubies[k].el.style.transform = cubies[k].el.dataset.base;
-        void cubeEl.offsetWidth;
-        cubeEl.classList.remove('turning');
+        // a concurrent handler may have torn the playback state down (or an
+        // engine hiccup thrown) — the promise must still settle, or animating
+        // sticks forever and every await waitIdle() in the app hangs
+        try {
+          if (pbState) pbState = ENG().applyMove(pbState, move);
+          affected.forEach((el) => { el.style.transition = 'none'; });
+          render();
+          for (const k in cubies) cubies[k].el.style.transform = cubies[k].el.dataset.base;
+          void cubeEl.offsetWidth;
+          cubeEl.classList.remove('turning');
+        } catch (_) {}
         resolve();
       }, dur + 30);
     });
@@ -593,8 +631,11 @@
 
   async function playSequence(moves, durPer) {
     animating = true;
-    for (const m of moves) await animateMove(m, durPer);
-    animating = false;
+    try {
+      for (const m of moves) await animateMove(m, durPer);
+    } finally {
+      animating = false;
+    }
   }
 
   // ---------- palette ----------
@@ -659,7 +700,7 @@
   const howtoEl = document.getElementById('howto');
   document.querySelectorAll('.tab').forEach((t) => {
     t.addEventListener('click', async () => {
-      if (t.dataset.mode === mode) return;
+      if (t.dataset.mode === mode || scrambling) return;
       await waitIdle();
       exitPlayback();
       mode = t.dataset.mode;
@@ -693,7 +734,7 @@
     },
     fast: {
       '3': 'A two-phase computer method: around 20–25 moves, one straight run with no stages to learn. First use takes a few seconds to warm up.',
-      '4': 'Phased reduction guided by exact lookup tables (≈1.3 MB, generated on your device the first time), then a two-phase finish — around 95 moves. Solving takes a few seconds.',
+      '4': 'Phased reduction guided by pre-built lookup tables (a 228 KB download, cached for offline use), then a two-phase finish — typically 55–70 moves. Solving takes a few seconds.',
       '2': 'The mathematically shortest solution — never more than 11 turns. First use takes a moment to warm up.',
       'm': 'The mathematically shortest way back to a perfect cube — never more than 11 turns. First use takes a moment to warm up.',
     },
@@ -701,7 +742,7 @@
   function updateMethodNote() { methodNote.textContent = METHOD_NOTES[method][mode]; }
   document.querySelectorAll('.segbtn').forEach((b) => {
     b.addEventListener('click', async () => {
-      if (b.dataset.method === method) return;
+      if (b.dataset.method === method || scrambling) return;
       await waitIdle();
       exitPlayback();
       method = b.dataset.method;
@@ -724,6 +765,8 @@
   }
 
   document.getElementById('btnReset').addEventListener('click', async () => {
+    if (scrambling) return;
+    shareVirgin = false;
     await waitIdle();
     exitPlayback();
     data[mode].paint = mode === 'm' ? C.stateToShapes(C.solvedState()) : ENG().solvedState();
@@ -731,6 +774,8 @@
     render(); clearMsg();
   });
   document.getElementById('btnClear').addEventListener('click', async () => {
+    if (scrambling) return;
+    shareVirgin = false;
     await waitIdle();
     exitPlayback();
     if (mode === '3') {
@@ -747,44 +792,47 @@
     render(); clearMsg();
   });
 
-  let scrambling = false;
   document.getElementById('btnScramble').addEventListener('click', async () => {
     if (scrambling) return;
     scrambling = true;
-    await waitIdle();
-    exitPlayback();
-    clearMsg();
-    if (viewMode === 'net') setView('3d');   // watch the scramble happen
-    if (mode === '3') {
-      if (data['3'].paint.includes('X')) data['3'].paint = C.solvedState();
-      pbState = data['3'].paint;
-      await playSequence(C.randomScramble(20), 90);
-      data['3'].paint = pbState;
-    } else if (mode === '4') {
-      if (data['4'].paint.includes('X')) data['4'].paint = C4.solvedState();
-      pbState = data['4'].paint;
-      await playSequence(C4.randomScramble(28), 85);
-      data['4'].paint = pbState;
-    } else if (mode === '2') {
-      if (data['2'].paint.includes('X')) data['2'].paint = C.solvedState();
-      pbState = data['2'].paint;
-      await playSequence(C.randomScramble2(12), 110);
-      data['2'].paint = pbState;
-    } else {
-      // mirror: animate real geometry from solved, then hand back shape-paint view
-      pbState = C.solvedState();
-      mirrorGeo = true;
-      render();
-      await sleep(350);
-      await playSequence(C.randomScramble2(12), 130);
-      data.m.paint = C.stateToShapes(pbState);
-      await sleep(500);
-      mirrorGeo = false;
-      render();
+    shareVirgin = false;
+    try {
+      await waitIdle();
+      exitPlayback();
+      clearMsg();
+      if (viewMode === 'net') setView('3d');   // watch the scramble happen
+      if (mode === '3') {
+        if (data['3'].paint.includes('X')) data['3'].paint = C.solvedState();
+        pbState = data['3'].paint;
+        await playSequence(C.randomScramble(20), 90);
+        data['3'].paint = pbState;
+      } else if (mode === '4') {
+        if (data['4'].paint.includes('X')) data['4'].paint = C4.solvedState();
+        pbState = data['4'].paint;
+        await playSequence(C4.randomScramble(28), 85);
+        data['4'].paint = pbState;
+      } else if (mode === '2') {
+        if (data['2'].paint.includes('X')) data['2'].paint = C.solvedState();
+        pbState = data['2'].paint;
+        await playSequence(C.randomScramble2(12), 110);
+        data['2'].paint = pbState;
+      } else {
+        // mirror: animate real geometry from solved, then hand back shape-paint view
+        pbState = C.solvedState();
+        mirrorGeo = true;
+        render();
+        await sleep(350);
+        await playSequence(C.randomScramble2(12), 130);
+        data.m.paint = C.stateToShapes(pbState);
+        await sleep(500);
+        mirrorGeo = false;
+        render();
+      }
+      pbState = null;
+      showMsg('Scrambled! Now hit “Solve my cube”.', 'ok');
+    } finally {
+      scrambling = false;
     }
-    pbState = null;
-    showMsg('Scrambled! Now hit “Solve my cube”.', 'ok');
-    scrambling = false;
   });
 
   // ---------- pretty patterns ----------
@@ -829,24 +877,29 @@
   async function applyPattern(p) {
     if (scrambling || animating) return;
     scrambling = true;
-    await waitIdle();
-    exitPlayback();
-    clearMsg();
-    if (viewMode === 'net') setView('3d');   // watch the moves happen
-    data[mode].paint = mode === '4' ? C4.solvedState() : C.solvedState();
-    pbState = data[mode].paint;
-    render();
-    await sleep(300);
-    await playSequence(p.alg.split(' '), 110);
-    data[mode].paint = pbState;
-    pbState = null;
-    render();
-    showMsg(`${p.name} — from a solved cube: ${p.alg}`, 'ok');
-    scrambling = false;
+    shareVirgin = false;
+    try {
+      await waitIdle();
+      exitPlayback();
+      clearMsg();
+      if (viewMode === 'net') setView('3d');   // watch the moves happen
+      data[mode].paint = mode === '4' ? C4.solvedState() : C.solvedState();
+      pbState = data[mode].paint;
+      render();
+      await sleep(300);
+      await playSequence(p.alg.split(' '), 110);
+      data[mode].paint = pbState;
+      pbState = null;
+      render();
+      showMsg(`${p.name} — from a solved cube: ${p.alg}`, 'ok');
+    } finally {
+      scrambling = false;
+    }
   }
 
   btnSolve.addEventListener('click', async () => {
-    if (animating) return;
+    if (animating || scrambling) return;
+    shareVirgin = false;
     clearMsg();
     // blank checks first (cheap)
     if (mode === '3' || mode === '4') {
@@ -977,8 +1030,10 @@
     render();
     buildSolutionUI();
     updatePlaybackUI();
+    // only the 2×2 and mirror fast solvers are truly optimal; the 3×3 and
+    // 4×4 fast paths find short (not shortest) solutions
     showMsg(method === 'fast'
-      ? `${mode === '3' ? 'Short' : 'Shortest possible'} solution found: just ${solution.moves.length} moves! Follow along below.`
+      ? `${mode === '2' || mode === 'm' ? 'Shortest possible' : 'Short'} solution found: just ${solution.moves.length} moves! Follow along below.`
       : `Solution found: ${solution.moves.length} moves in ${solution.stages.length} stages. Follow along below!`, 'ok');
     solutionEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
@@ -1001,6 +1056,25 @@
     render();
   }
 
+  // per-stage "why this works" — the understanding the move lists alone don't
+  // give. Keyed by stage name (shared stages appear in several modes).
+  const WHY = {
+    'White Cross': 'Edges carry two stickers, so a cross piece is only right when its side colour matches the side centre too — not just white-on-bottom. The cross goes first because it costs nothing: with everything else unsolved, each edge can drop straight in with nothing to protect.',
+    'White Corners': 'The repeating R′ D′ R D trick lifts a corner out, turns its slot underneath it, and re-inserts it — each repeat rotates the corner one step. It never disturbs the finished cross because everything else it touches is still unsolved.',
+    'Middle Layer': 'The middle layer is only four edges — the centres never move on a 3×3. The insert sequence brings an edge down from the top and swaps it into its slot while shuffling top-layer pieces only, so the solved layer below survives untouched.',
+    'Yellow Cross': 'F R U R′ U′ F′ flips top edges in place. Started from the right shape (dot → L → line), each pass flips exactly the edges needed to grow the cross — and every move that touches the solved layers is undone before the sequence ends.',
+    'Yellow Edges': 'This sequence cycles three top edges and touches nothing below. Lining up one correct edge first turns "several wrong" into a single three-piece cycle, which the sequence finishes in one or two passes.',
+    'Yellow Corners': 'U R U′ L′ U R′ U′ L is a commutator: it does a small job, does a second job, then undoes both — and the leftover difference is exactly a three-corner cycle on top, with the rest of the cube returned to how it was.',
+    'Final Twist': 'Repeating R′ D′ R D twists the held corner but appears to wreck the layers below. It hasn’t: corner twists on a legal cube must total a multiple of three, so by the time the last corner is turned right, the damage below has exactly cancelled itself out. That’s why you must never rotate the whole cube mid-stage — only the top layer.',
+    'Solve the Centers': 'Unlike a 3×3, a 4×4 has no fixed centres — the middle pieces travel. They come first because centre blocks only need each other to assemble, and once built they decide which colour every face will be for the rest of the solve.',
+    'Pair the Edges': 'Every 4×4 edge is two separate wing pieces. A slice move brings matching wings side by side, an outer turn stores the finished pair out of the way, and the slice is undone — repeat until all twelve edges are whole and the cube behaves exactly like a 3×3.',
+    'Flip Parity': 'A single flipped edge is impossible on a 3×3 — but this "edge" is secretly two pieces that were paired in a mirrored way. The long inner-slice sequence re-splits the pair and re-joins it the right way round.',
+    'Swap Parity': 'Two edges swapped with nothing else wrong can’t happen on a 3×3 either. On a 4×4 the identical-looking centre pieces silently absorbed the difference — this sequence trades the visible swap back into the invisible centres.',
+    'Bottom Layer': 'With no fixed centres, only the pieces’ relative positions matter. Holding the back-bottom-left piece still removes whole-cube spins from the puzzle — every other piece is then solved relative to that anchor.',
+    'Top Color Up': 'R′ D′ R D twists one corner at a time. The bottom looks damaged in between, but a legal cube only allows total twist in multiples of three — when the last corner is set, the bottom snaps back by itself.',
+    'Level the Top': 'Same principle as twisting corners on a colour cube: each block is rotated in place until its height fits. Mid-sequence the bottom looks disturbed, but the twists must cancel by the end, so it returns exactly.',
+    'Final Positions': 'The closing sequences shuffle only top-layer pieces: every move that dips into the bottom is undone by its mirror later on. What remains is a pure cycle of the last pieces into their slots.',
+  };
   function buildSolutionUI() {
     stagelistEl.innerHTML = '';
     solution.stages.forEach((st, si) => {
@@ -1009,6 +1083,9 @@
       d.id = 'stg' + si;
       const chips = [];
       for (let i = st.start; i < st.end; i++) chips.push(`<span class="mv" id="mv${i}">${solution.moves[i]}</span>`);
+      const why = st.end > st.start && WHY[st.name]
+        ? `<details class="why"><summary>Why this works</summary><p>${WHY[st.name]}</p></details>`
+        : '';
       d.innerHTML = `
         <div class="shead">
           <div class="num">${si + 1}</div>
@@ -1016,6 +1093,7 @@
           <div class="scount">${st.end === st.start ? '✓ already done' : (st.end - st.start) + ' moves'}</div>
         </div>
         <div class="sdesc">${st.desc}</div>
+        ${why}
         <div class="smoves">${chips.join('')}</div>`;
       stagelistEl.appendChild(d);
     });
@@ -1198,8 +1276,35 @@
     }
   }
   if (sharedCube) showMsg('Loaded a shared cube — hit “Solve my cube” to see the solution.', 'ok');
+  updateStickyOffsets();
+  // a share link pasted into a tab that already has the app open is a
+  // same-document navigation — no reload, so apply it live
+  window.addEventListener('hashchange', () => {
+    const s = parseShareHash();
+    if (!s) return;
+    history.replaceState(null, '', location.pathname + location.search);
+    if (scrambling || animating) return;
+    exitPlayback();
+    mode = s.m;
+    data[mode].paint = s.p;
+    shareVirgin = true;
+    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
+    howtoEl.innerHTML = HOWTO[mode];
+    updateMethodNote();
+    updateScanButton();
+    pbState = null;
+    mirrorGeo = false;
+    buildPalette();
+    buildCube();
+    buildNet();
+    buildPatterns();
+    syncView();
+    render();
+    updateStickyOffsets();
+    showMsg('Loaded a shared cube — hit “Solve my cube” to see the solution.', 'ok');
+  });
   booted = true;
-  window.addEventListener('resize', () => { buildCube(); render(); });
+  window.addEventListener('resize', () => { buildCube(); render(false); updateStickyOffsets(); });
 
   // installable + offline (GitHub Pages is https; localhost keeps tests honest)
   if ('serviceWorker' in navigator

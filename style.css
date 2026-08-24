@@ -27,6 +27,7 @@
     --gold3: #a87a0a;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  button, .tab, .swatch, .netcell { touch-action: manipulation; }
   html, body { height: 100%; }
   body {
     font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -60,7 +61,7 @@
     position: relative; background: var(--card); border: 1px solid var(--card-border);
     border-radius: 14px; padding: 8px; touch-action: none; user-select: none; overflow: hidden;
   }
-  .viewport { width: 100%; aspect-ratio: 1 / 1; max-height: 62vh; perspective: 1100px; display: flex; align-items: center; justify-content: center; cursor: grab; }
+  .viewport { width: 100%; aspect-ratio: 1 / 1; max-height: 62vh; perspective: 1100px; display: flex; align-items: center; justify-content: center; cursor: grab; touch-action: none; }
 
   /* 3D / flat-net view switch + the unfolded net itself */
   .viewseg { position: absolute; top: 10px; right: 10px; z-index: 5; display: flex; border: 1px solid var(--card-border); border-radius: 9px; overflow: hidden; }
@@ -78,58 +79,11 @@
     display: grid; grid-template-columns: repeat(var(--n), 1fr); grid-template-rows: repeat(var(--n), 1fr);
     gap: 2px; background: var(--card-border); border: 2px solid var(--card-border); border-radius: 7px;
   }
-  .netcell { position: relative; border-radius: 3px; cursor: pointer; }
+  .netcell { position: relative; border-radius: 3px; cursor: pointer; touch-action: none; }
   .netcell.lock { cursor: default; }
   .netcell.lock::after { content: ""; position: absolute; inset: 36%; border-radius: 50%; background: rgba(0,0,0,0.15); }
   .netcell.blank { background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.07) 0 4px, transparent 4px 8px); }
 
-  /* ---- phones: the cube stays pinned while everything scrolls beneath it,
-     so you can paint from the palette and follow a playing solution without
-     losing sight of the cube ---- */
-  @media (max-width: 859px) {
-    .wrap { padding: 8px 10px calc(34px + env(safe-area-inset-bottom)); }
-    header { padding: 4px 2px 6px; }
-    header h1 { font-size: 19px; }
-    header .sub { font-size: 12px; }
-    .tabs { margin-bottom: 10px; }
-    .tab { flex: 1 1 0; text-align: center; padding: 10px 4px; }
-    .stage3d {
-      position: sticky; top: 6px; z-index: 10;
-      background: linear-gradient(var(--card), var(--card)), var(--bar);
-      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-      box-shadow: 0 10px 30px rgba(0,0,0,0.45);
-    }
-    .viewport { max-height: 38vh; }
-    .netview { max-height: 38vh; padding: 30px 6px 4px; gap: 5px; }
-    .hint3d { position: static; padding: 2px 0 4px; }
-    button.btn { min-height: 44px; }
-    .btnrow button.btn { flex: 1 1 auto; }
-    .stagelist { max-height: none; overflow-y: visible; }
-    footer { margin-top: 18px; }
-    /* anchored scrolls land below the pinned cube */
-    .card { scroll-margin-top: calc(38vh + 64px); }
-    /* the play controls stay pinned right under the cube during playback */
-    #solution .playbar {
-      position: sticky; top: calc(38vh + 52px); z-index: 9;
-      background: linear-gradient(var(--card), var(--card)), var(--bar);
-      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-      padding: 6px; margin: -6px -6px 0; border-radius: 14px;
-    }
-  }
-
-  /* ---- larger screens: cube and controls side by side, the cube column
-     pinned so it never scrolls away while reading the solution; header and
-     mode tabs share one row ---- */
-  @media (min-width: 860px) {
-    .layout { grid-template-columns: 1.15fr 1fr; gap: 20px; align-items: start; }
-    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-    .topbar .tabs { margin-bottom: 0; }
-    .topbar header { padding-bottom: 6px; }
-    .stage3d { position: sticky; top: 16px; }
-    .viewport { max-height: calc(100vh - 140px); }
-    .card { padding: 16px 18px; }
-    .stagelist { max-height: 56vh; }
-  }
   .viewport:active { cursor: grabbing; }
   .cube { position: relative; transform-style: preserve-3d; width: 0; height: 0; }
   .cubie { position: absolute; transform-style: preserve-3d; width: 0; height: 0; }
@@ -241,6 +195,9 @@
   .stg .sname { font-weight: 700; font-size: 14px; }
   .stg .scount { margin-left: auto; color: var(--muted); font-size: 12px; }
   .stg .sdesc { color: var(--muted); font-size: 12.5px; margin: 4px 0 6px 30px; line-height: 1.4; }
+  .stg .why { margin: 0 0 8px 30px; font-size: 12px; color: var(--muted); }
+  .stg .why summary { cursor: pointer; font-weight: 600; font-size: 11.5px; color: var(--accent); }
+  .stg .why p { margin-top: 4px; line-height: 1.55; max-width: 60ch; }
   .stg .smoves { display: flex; flex-wrap: wrap; gap: 5px; margin-left: 30px; }
   .mv {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -327,6 +284,54 @@
   details.notation p { margin-top: 6px; line-height: 1.5; }
   footer { text-align: center; color: var(--footer); font-size: 11.5px; margin-top: 26px; }
 
+  /* ---- phones: the cube stays pinned while everything scrolls beneath it,
+     so you can paint from the palette and follow a playing solution without
+     losing sight of the cube ---- */
+  @media (max-width: 859px) {
+    .wrap { padding: 8px 10px calc(34px + env(safe-area-inset-bottom)); }
+    header { padding: 4px 2px 6px; }
+    header h1 { font-size: 19px; }
+    header .sub { font-size: 12px; }
+    .tabs { margin-bottom: 10px; }
+    .tab { flex: 1 1 0; text-align: center; padding: 10px 4px; }
+    .stage3d {
+      position: sticky; top: 6px; z-index: 10;
+      background: linear-gradient(var(--card), var(--card)), var(--bar);
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+    }
+    .viewport { max-height: 38vh; }
+    .netview { max-height: 38vh; padding: 30px 6px 4px; gap: 5px; }
+    .hint3d { position: static; padding: 2px 0 4px; }
+    button.btn { min-height: 44px; }
+    .btnrow button.btn { flex: 1 1 auto; }
+    .stagelist { max-height: none; overflow-y: visible; }
+    footer { margin-top: 18px; }
+    /* anchored scrolls land below the pinned cube (JS measures --stickyTop) */
+    .card { scroll-margin-top: calc(var(--stickyTop, 38vh) + 12px); }
+    /* the play controls stay pinned right under the cube during playback */
+    #solution .playbar {
+      position: sticky; top: var(--stickyTop, calc(38vh + 52px)); z-index: 9;
+      background: linear-gradient(var(--card), var(--card)), var(--bar);
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      padding: 6px; margin: -6px -6px 0; border-radius: 14px;
+    }
+  }
+
+  /* ---- larger screens: cube and controls side by side, the cube column
+     pinned so it never scrolls away while reading the solution; header and
+     mode tabs share one row ---- */
+  @media (min-width: 860px) {
+    .layout { grid-template-columns: 1.15fr 1fr; gap: 20px; align-items: start; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .topbar .tabs { margin-bottom: 0; }
+    .topbar header { padding-bottom: 6px; }
+    .stage3d { position: sticky; top: 16px; }
+    .viewport { max-height: calc(100vh - 140px); }
+    .card { padding: 16px 18px; }
+    .stagelist { max-height: 56vh; }
+  }
+
   /* ---- light theme ("paper"): white cards on pale gray, ink text, blue
      accent, soft shadows. Resolved into html[data-theme] by the script in
      index.html: URL ?theme= > saved toggle choice > system preference. ---- */
@@ -367,6 +372,7 @@
   html[data-theme="light"] .mv.cur { box-shadow: 0 0 10px rgba(37, 99, 235, 0.35); }
   html[data-theme="light"] button.btn.primary,
   html[data-theme="light"] .scanChoiceCard a.btn.primary { box-shadow: 0 4px 14px rgba(37, 99, 235, 0.25); }
+  html[data-theme="light"] .netcell { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.1); }
   html[data-theme="light"] .scanChoiceCard { border-color: var(--card-border); }
   html[data-theme="light"] .scanChoiceTitle { color: var(--text); }
   html[data-theme="light"] .scanChoiceMsg { color: var(--muted); }
