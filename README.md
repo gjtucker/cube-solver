@@ -1,10 +1,10 @@
-# Cubely
+# CubeSnap
 
 **[gjtucker.github.io/cube-solver](https://gjtucker.github.io/cube-solver/)** — a free Rubik's cube solver. No ads, no app, no sign-up.
 
 Scan your cube with the camera and follow a step-by-step 3D solution, right in the browser. Installable as an app (Add to Home Screen) and works offline.
 
-![Cubely](og-image.png)
+![CubeSnap](og-image.png)
 
 ## Features
 
@@ -13,6 +13,9 @@ Scan your cube with the camera and follow a step-by-step 3D solution, right in t
 - **Two solving styles** — *Step-by-step* teaches the classic layer-by-layer method in friendly stages; *Fewest moves* finds short solutions (two-phase for 3×3, phased reduction for 4×4 with a "Search harder" deep mode that averages ~55 moves).
 - **Fast 4×4 solving in the browser** — 232 KB of compressed lookup tables load in ~50 ms and the search runs on parallel Web Workers, so a fewest-moves 4×4 solve takes ~4 seconds without freezing the page.
 - **3D playback** — animated cube with play/pause, stepping, speed control, and per-stage move lists. Your cube and playback position survive refreshes.
+- **2D net view** — a flat unfolded cross as an alternative to the 3D cube while painting; some find it much easier to copy a real cube face-by-face.
+- **Pretty patterns** — checkerboard, cube-in-cube, superflip and friends, animated from a solved cube with the moves shown so you can follow along. Every algorithm is verified against the engine (fun fact discovered doing so: a true checkerboard is mathematically impossible on 2×2 and 4×4 cubes).
+- **Share & copy** — share a link that reproduces your exact cube on any device; copy a solution's move sequence with one tap.
 - **No build, no backend** — plain HTML/CSS/JS served statically. Clone it and open `index.html`.
 
 ## Run locally
@@ -48,4 +51,4 @@ node tests/solve4-harness.mjs --hard     # the "Search harder" deep mode
 
 ## Themes
 
-Cubely follows your system's light/dark preference; the toggle in the header (persisted per browser) or `?theme=dark` / `?theme=light` in the URL overrides it.
+CubeSnap follows your system's light/dark preference; the toggle in the header (persisted per browser) or `?theme=dark` / `?theme=light` in the URL overrides it.

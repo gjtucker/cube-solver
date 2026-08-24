@@ -165,6 +165,7 @@
   let moveIndex = 0;
   let playing = false;
   let speedVal = 5;
+  let viewMode = '3d';  // '3d' | 'net' — how the cube is shown while painting
 
   // ---------- persistence: the workspace survives refreshes ----------
   // Saved per browser: every mode's paint, the active tab, solve method,
@@ -174,7 +175,7 @@
   function saveStateNow() {
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify({
-        mode, method, selColor, selShape, speedVal,
+        mode, method, selColor, selShape, speedVal, view: viewMode,
         paints: { 3: data['3'].paint, 4: data['4'].paint, 2: data['2'].paint, m: data.m.paint },
         playback: solution && baseState ? { solution, baseState, moveIndex } : null,
       }));
@@ -202,6 +203,7 @@
       if (typeof s.selColor === 'string') selColor = s.selColor;
       if (typeof s.selShape === 'number' || s.selShape === 'X') selShape = s.selShape;
       if (typeof s.speedVal === 'number' && s.speedVal >= 1 && s.speedVal <= 10) speedVal = s.speedVal;
+      if (s.view === 'net' || s.view === '3d') viewMode = s.view;
       return s;
     } catch (_) { return null; }
   }
@@ -350,7 +352,85 @@
       el.classList.remove('gold', 'mirrorbody');
       el.innerHTML = '';
     }
+    renderNet();
   }
+
+  // ---------- 2D net view ----------
+  // A flat unfolded cross — some people find it much easier to copy a real
+  // cube face-by-face onto a net than onto a spinning 3D cube. Playback and
+  // move animations always run in 3D; the net is a paint-time view.
+  const netEl = document.getElementById('netview');
+  const viewSeg = document.getElementById('viewSeg');
+  const view3dBtn = document.getElementById('view3dBtn');
+  const viewNetBtn = document.getElementById('viewNetBtn');
+  const NET_COL = { U: 2, L: 1, F: 2, R: 3, B: 4, D: 2 };
+  const NET_ROW = { U: 1, L: 2, F: 2, R: 2, B: 2, D: 3 };
+  const NET_OFF = { U: 0, R: 1, F: 2, D: 3, L: 4, B: 5 };
+  let netCells = {};   // facelet idx -> cell element
+  function buildNet() {
+    netCells = {};
+    netEl.innerHTML = '';
+    if (mode === 'm') return;
+    const n = mode === '4' ? 4 : mode === '2' ? 2 : 3;
+    const per = mode === '4' ? 16 : 9;
+    for (const f of ['U', 'L', 'F', 'R', 'B', 'D']) {
+      const fEl = document.createElement('div');
+      fEl.className = 'netface';
+      fEl.style.gridColumn = NET_COL[f];
+      fEl.style.gridRow = NET_ROW[f];
+      fEl.style.setProperty('--n', n);
+      for (let r = 0; r < n; r++) {
+        for (let c = 0; c < n; c++) {
+          const idx = mode === '2'
+            ? NET_OFF[f] * 9 + [0, 2, 6, 8][r * 2 + c]
+            : NET_OFF[f] * per + r * n + c;
+          const cell = document.createElement('div');
+          cell.className = 'netcell';
+          if (mode === '3' && idx % 9 === 4) cell.classList.add('lock');
+          cell.addEventListener('click', () => {
+            if (animating || solution) return;
+            if (mode === '3' && idx % 9 === 4) return;   // centers locked
+            data[mode].paint[idx] = selColor;
+            pbState = null;
+            render();
+            clearMsg();
+          });
+          netCells[idx] = cell;
+          fEl.appendChild(cell);
+        }
+      }
+      netEl.appendChild(fEl);
+    }
+  }
+  function renderNet() {
+    if (mode === 'm' || netEl.style.display === 'none') return;
+    const st = pbState || data[mode].paint;
+    for (const idx in netCells) {
+      const cell = netCells[idx];
+      const c = st[idx];
+      cell.style.background = COLORS[c] || COLORS.X;
+      cell.classList.toggle('blank', c === 'X');
+    }
+  }
+  // effective view: mirror mode and playback always show the 3D cube,
+  // without forgetting the user's preference
+  function syncView() {
+    const v = (mode === 'm' || solution) ? '3d' : viewMode;
+    viewport.style.display = v === 'net' ? 'none' : '';
+    netEl.style.display = v === 'net' ? '' : 'none';
+    viewSeg.style.display = (mode === 'm' || solution) ? 'none' : '';
+    view3dBtn.classList.toggle('on', v === '3d');
+    viewNetBtn.classList.toggle('on', v === 'net');
+    hint3d.textContent = v === 'net' ? 'tap a square to paint it' : HINT[mode];
+    renderNet();
+  }
+  function setView(v) {
+    viewMode = v;
+    syncView();
+    saveState();
+  }
+  view3dBtn.addEventListener('click', () => setView('3d'));
+  viewNetBtn.addEventListener('click', () => setView('net'));
 
   function renderMirrorPaint() {
     layoutCube(); // restore uniform boxes
@@ -592,6 +672,9 @@
       mirrorGeo = false;
       buildPalette();
       buildCube();
+      buildNet();
+      buildPatterns();
+      syncView();
       render();
       clearMsg();
     });
@@ -671,6 +754,7 @@
     await waitIdle();
     exitPlayback();
     clearMsg();
+    if (viewMode === 'net') setView('3d');   // watch the scramble happen
     if (mode === '3') {
       if (data['3'].paint.includes('X')) data['3'].paint = C.solvedState();
       pbState = data['3'].paint;
@@ -702,6 +786,64 @@
     showMsg('Scrambled! Now hit “Solve my cube”.', 'ok');
     scrambling = false;
   });
+
+  // ---------- pretty patterns ----------
+  // Applied by animating the algorithm from a solved cube, so the moves shown
+  // in the message really do produce the pattern on a real cube.
+  const PATTERNS = {
+    '3': [
+      { name: 'Checkerboard', alg: 'R2 L2 U2 D2 F2 B2' },
+      { name: 'Cube in cube', alg: "F L F U' R U F2 L2 U' L' B D' B' L2 U" },
+      { name: 'Cube³', alg: "U' L' U' F' R2 B' R F U B2 U B' L U' F U R F'" },
+      { name: 'Six spots', alg: "U D' R L' F B' U D'" },
+      { name: 'Tetris', alg: "L R F B U' D' L' R'" },
+      { name: 'Superflip', alg: "U R2 F B R B2 R U2 L B2 R U' D' R2 F R' L B2 U2 F2" },
+    ],
+    // NOTE: a true checkerboard is impossible on even cubes — the full 2×2
+    // group was searched exhaustively and no two-colour diagonal pattern
+    // exists in it (and 4×4 blocks reduce to the same corner arrangement).
+    '4': [
+      { name: 'Diamonds', alg: 'r2 l2 f2 b2 u2 d2' },
+      { name: 'Pillars', alg: 'r2 l2' },
+      { name: 'Belt', alg: 'u2 d2' },
+    ],
+    '2': [
+      { name: 'Half & half', alg: 'R2 U2' },
+      { name: 'Pinwheel', alg: 'R2 F2 R2 U2' },
+    ],
+  };
+  const patternsCard = document.getElementById('patternsCard');
+  const patternRow = document.getElementById('patternRow');
+  function buildPatterns() {
+    const list = PATTERNS[mode] || [];
+    patternsCard.style.display = list.length ? '' : 'none';
+    patternRow.innerHTML = '';
+    for (const p of list) {
+      const b = document.createElement('button');
+      b.className = 'btn';
+      b.textContent = p.name;
+      b.addEventListener('click', () => applyPattern(p));
+      patternRow.appendChild(b);
+    }
+  }
+  async function applyPattern(p) {
+    if (scrambling || animating) return;
+    scrambling = true;
+    await waitIdle();
+    exitPlayback();
+    clearMsg();
+    if (viewMode === 'net') setView('3d');   // watch the moves happen
+    data[mode].paint = mode === '4' ? C4.solvedState() : C.solvedState();
+    pbState = data[mode].paint;
+    render();
+    await sleep(300);
+    await playSequence(p.alg.split(' '), 110);
+    data[mode].paint = pbState;
+    pbState = null;
+    render();
+    showMsg(`${p.name} — from a solved cube: ${p.alg}`, 'ok');
+    scrambling = false;
+  }
 
   btnSolve.addEventListener('click', async () => {
     if (animating) return;
@@ -831,6 +973,7 @@
     paintCard.style.pointerEvents = 'none';
     pbState = baseState.slice();
     if (mode === 'm') mirrorGeo = true;
+    syncView();   // playback always plays on the 3D cube
     render();
     buildSolutionUI();
     updatePlaybackUI();
@@ -854,6 +997,7 @@
     paintCard.style.pointerEvents = '';
     bigdone.style.display = 'none';
     clearMsg();
+    syncView();
     render();
   }
 
@@ -1028,6 +1172,9 @@
   }
   buildPalette();
   buildCube();
+  buildNet();
+  buildPatterns();
+  syncView();
   render();
   // resume an in-progress solution at the exact move it was left on.
   // enterPlayback resets pbState to baseState, so advance it afterwards.

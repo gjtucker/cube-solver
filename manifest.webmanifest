@@ -1,6 +1,6 @@
 {
-  "name": "Cubely",
-  "short_name": "Cubely",
+  "name": "CubeSnap",
+  "short_name": "CubeSnap",
   "description": "Scan your Rubik's cube with the camera and follow a step-by-step 3D solution. 3×3, 4×4, 2×2 and Mirror cubes.",
   "start_url": "./",
   "scope": "./",
