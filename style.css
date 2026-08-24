@@ -1,24 +1,27 @@
+  /* dark (default) — flat graphite surfaces, one restrained accent.
+     Light is a token swap below; the pre-stylesheet script in index.html
+     resolves the effective theme (?theme > saved choice > system) into
+     html[data-theme], so rules here never need media queries. */
   :root {
-    --bg1: #0d1023;
-    --bg2: #232a5c;
-    --bar: rgba(13, 16, 35, 0.94);
-    --swatch-bg: #191c33;
-    --footer: #565d85;
-    --card: rgba(255, 255, 255, 0.06);
-    --card-border: rgba(255, 255, 255, 0.10);
-    --text: #eef0ff;
-    --muted: #9aa1c7;
-    --accent: #6c7bff;
-    --accent2: #9b5cff;
+    --bg1: #0e1013;
+    --bar: rgba(14, 16, 19, 0.92);
+    --swatch-bg: #1b1e24;
+    --footer: #596070;
+    --card: #16181d;
+    --card-border: #24272e;
+    --text: #e7e9ec;
+    --muted: #8d95a3;
+    --accent: #3d7eff;
+    --accent2: #3d7eff;
     --good: #3ddc84;
-    --chip: rgba(255, 255, 255, 0.09);
+    --chip: #1e2128;
     --c-U: #ffd500;
     --c-D: #f4f4f4;
     --c-F: #00a651;
     --c-B: #1163d8;
     --c-R: #ff7a00;
     --c-L: #e0244a;
-    --c-X: #3a3f5e;
+    --c-X: #2c3038;
     --gold1: #ffe9a8;
     --gold2: #d4a017;
     --gold3: #a87a0a;
@@ -26,33 +29,59 @@
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: radial-gradient(1200px 800px at 20% -10%, var(--bg2) 0%, var(--bg1) 55%), var(--bg1);
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg1);
     color: var(--text);
     min-height: 100%;
     overscroll-behavior-y: none;
   }
   .wrap { max-width: 1200px; margin: 0 auto; padding: 14px 14px 48px; }
   header { display: flex; align-items: baseline; gap: 10px; padding: 6px 2px 10px; flex-wrap: wrap; }
-  header h1 { font-size: 22px; letter-spacing: 0.3px; }
-  header h1 .grad { background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  header h1 { font-size: 21px; letter-spacing: -0.2px; font-weight: 800; display: flex; align-items: center; gap: 9px; }
+  .logomark { width: 24px; height: 24px; flex: 0 0 auto; }
   header .sub { color: var(--muted); font-size: 13px; }
 
-  .tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; align-items: stretch; }
   .tab {
-    font: inherit; font-size: 13.5px; font-weight: 700; color: var(--muted);
-    background: var(--card); border: 1px solid var(--card-border); border-radius: 999px;
+    font: inherit; font-size: 13.5px; font-weight: 600; color: var(--muted);
+    background: var(--card); border: 1px solid var(--card-border); border-radius: 10px;
     padding: 8px 14px; cursor: pointer; transition: all 0.15s;
   }
-  .tab.on { color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent2)); border-color: transparent; box-shadow: 0 4px 14px rgba(108,123,255,0.35); }
+  .tab.on { color: #fff; background: var(--accent); border-color: transparent; font-weight: 700; }
+  .themebtn {
+    font: inherit; font-size: 15px; width: 38px; flex: 0 0 auto;
+    color: var(--muted); background: transparent; border: 1px solid var(--card-border);
+    border-radius: 10px; cursor: pointer;
+  }
 
   .layout { display: grid; grid-template-columns: 1fr; gap: 14px; }
 
   .stage3d {
     position: relative; background: var(--card); border: 1px solid var(--card-border);
-    border-radius: 20px; padding: 8px; touch-action: none; user-select: none; overflow: hidden;
+    border-radius: 14px; padding: 8px; touch-action: none; user-select: none; overflow: hidden;
   }
   .viewport { width: 100%; aspect-ratio: 1 / 1; max-height: 62vh; perspective: 1100px; display: flex; align-items: center; justify-content: center; cursor: grab; }
+
+  /* 3D / flat-net view switch + the unfolded net itself */
+  .viewseg { position: absolute; top: 10px; right: 10px; z-index: 5; display: flex; border: 1px solid var(--card-border); border-radius: 9px; overflow: hidden; }
+  .viewseg button {
+    font: inherit; font-size: 11.5px; font-weight: 600; padding: 4px 11px;
+    border: none; background: var(--chip); color: var(--muted); cursor: pointer;
+  }
+  .viewseg button.on { background: var(--accent); color: #fff; }
+  .netview {
+    width: 100%; aspect-ratio: 4 / 3; max-height: 62vh; margin: 0 auto;
+    display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(3, 1fr);
+    gap: 8px; padding: 34px 10px 26px;
+  }
+  .netface {
+    display: grid; grid-template-columns: repeat(var(--n), 1fr); grid-template-rows: repeat(var(--n), 1fr);
+    gap: 2px; background: var(--card-border); border: 2px solid var(--card-border); border-radius: 7px;
+  }
+  .netcell { position: relative; border-radius: 3px; cursor: pointer; }
+  .netcell.lock { cursor: default; }
+  .netcell.lock::after { content: ""; position: absolute; inset: 36%; border-radius: 50%; background: rgba(0,0,0,0.15); }
+  .netcell.blank { background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.07) 0 4px, transparent 4px 8px); }
 
   /* ---- phones: the cube stays pinned while everything scrolls beneath it,
      so you can paint from the palette and follow a playing solution without
@@ -71,6 +100,7 @@
       box-shadow: 0 10px 30px rgba(0,0,0,0.45);
     }
     .viewport { max-height: 38vh; }
+    .netview { max-height: 38vh; padding: 30px 6px 4px; gap: 5px; }
     .hint3d { position: static; padding: 2px 0 4px; }
     button.btn { min-height: 44px; }
     .btnrow button.btn { flex: 1 1 auto; }
@@ -132,12 +162,16 @@
   .hint3d { position: absolute; bottom: 8px; left: 0; right: 0; text-align: center; color: var(--muted); font-size: 11.5px; pointer-events: none; }
 
   .panel { display: flex; flex-direction: column; gap: 12px; }
-  .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 20px; padding: 14px; }
+  .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 14px; padding: 14px; }
+  .cardhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .cardhead h2 { margin-bottom: 0; }
+  .cardhead { margin-bottom: 10px; }
+  button.btn.mini { font-size: 12px; padding: 5px 10px; border-radius: 9px; color: var(--muted); border: 1px solid var(--card-border); }
   .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); margin-bottom: 10px; }
 
   .palette { display: flex; gap: 8px; flex-wrap: wrap; }
   .swatch {
-    width: 46px; height: 46px; border-radius: 12px; border: 2px solid rgba(255,255,255,0.15);
+    width: 46px; height: 46px; border-radius: 12px; border: 2px solid rgba(255,255,255,0.1);
     cursor: pointer; position: relative; flex: 0 0 auto;
     transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s;
     display: flex; align-items: center; justify-content: center;
@@ -154,7 +188,7 @@
     flex: 1; font: inherit; font-size: 13.5px; font-weight: 700; color: var(--muted);
     background: transparent; border: none; padding: 10px 6px; cursor: pointer; transition: all 0.15s;
   }
-  .segbtn.on { color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent2)); }
+  .segbtn.on { color: #fff; background: var(--accent); }
   .methodnote { color: var(--muted); font-size: 12px; line-height: 1.45; margin-bottom: 10px; }
 
   .btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -166,8 +200,8 @@
   button.btn:active { transform: scale(0.97); }
   button.btn:disabled { opacity: 0.4; cursor: default; }
   button.btn.primary {
-    background: linear-gradient(135deg, var(--accent), var(--accent2));
-    border: none; padding: 12px 22px; font-size: 15.5px; box-shadow: 0 6px 20px rgba(108,123,255,0.35);
+    background: var(--accent); color: #fff;
+    border: none; padding: 12px 22px; font-size: 15.5px;
   }
   button.btn.ghost { background: transparent; }
 
@@ -186,7 +220,7 @@
     border: 1px solid var(--card-border); border-radius: 10px; padding: 10px 0;
     cursor: pointer; font-size: 16px; line-height: 1;
   }
-  .playbar button.pb.main { flex: 1.6; background: linear-gradient(135deg, var(--accent), var(--accent2)); border: none; font-weight: 700; }
+  .playbar button.pb.main { flex: 1.6; background: var(--accent); color: #fff; border: none; font-weight: 700; }
   .playbar button.pb:disabled { opacity: 0.35; }
   .progress { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 12.5px; margin: 8px 2px; }
   .speed { display: flex; align-items: center; gap: 6px; }
@@ -194,7 +228,7 @@
 
   .stagelist { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; max-height: 46vh; overflow-y: auto; position: relative; padding-right: 2px; scrollbar-width: thin; }
   .stg { border: 1px solid var(--card-border); border-radius: 14px; padding: 10px 12px; opacity: 0.55; transition: opacity 0.2s, border-color 0.2s, background 0.2s; }
-  .stg.active { opacity: 1; background: rgba(108,123,255,0.08); border-color: rgba(108,123,255,0.5); }
+  .stg.active { opacity: 1; background: rgba(61,126,255,0.08); border-color: rgba(61,126,255,0.5); }
   .stg.done { opacity: 0.8; }
   .stg .shead { display: flex; align-items: center; gap: 8px; }
   .stg .num {
@@ -203,7 +237,7 @@
     font-size: 12px; font-weight: 700; color: var(--muted);
   }
   .stg.done .num { background: var(--good); color: #06331b; }
-  .stg.active .num { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; }
+  .stg.active .num { background: var(--accent); color: #fff; }
   .stg .sname { font-weight: 700; font-size: 14px; }
   .stg .scount { margin-left: auto; color: var(--muted); font-size: 12px; }
   .stg .sdesc { color: var(--muted); font-size: 12.5px; margin: 4px 0 6px 30px; line-height: 1.4; }
@@ -214,7 +248,7 @@
     background: var(--chip); color: var(--muted); min-width: 30px; text-align: center;
   }
   .mv.done { color: #6fe3a5; background: rgba(61,220,132,0.10); }
-  .mv.cur { color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent2)); box-shadow: 0 0 10px rgba(108,123,255,0.5); }
+  .mv.cur { color: #fff; background: var(--accent); }
 
   .bigdone { display: none; text-align: center; padding: 10px 0 4px; font-size: 17px; font-weight: 800; color: var(--good); }
 
@@ -272,9 +306,8 @@
     padding: 10px 14px; cursor: pointer;
   }
   .scanChoiceCard a.btn.primary {
-    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    background: var(--accent);
     border: none; padding: 12px 22px; font-size: 15.5px; color: #fff;
-    box-shadow: 0 6px 20px rgba(108,123,255,0.35);
   }
   .scanChoiceTitle { font-size: 16px; font-weight: 800; color: #fff; }
   .scanChoiceMsg { font-size: 13px; color: rgba(255,255,255,0.75); line-height: 1.45; margin-bottom: 4px; }
@@ -294,42 +327,13 @@
   details.notation p { margin-top: 6px; line-height: 1.5; }
   footer { text-align: center; color: var(--footer); font-size: 11.5px; margin-top: 26px; }
 
-  /* ---- theme previews (?theme=pro | ?theme=light in the URL) ----
-     The default look stays as-is; these override only what each theme
-     changes. The fullscreen camera overlay is deliberately untouched. */
-
-  /* "pro": refined dark — flat graphite surfaces, one restrained accent,
-     squarer corners, no glows */
-  html[data-theme="pro"] {
-    --bg1: #0e1013;
-    --bg2: #131519;
-    --card: #16181d;
-    --card-border: #24272e;
-    --text: #e7e9ec;
-    --muted: #8d95a3;
-    --accent: #3d7eff;
-    --accent2: #3d7eff;
-    --chip: #1e2128;
-    --bar: rgba(14, 16, 19, 0.92);
-    --swatch-bg: #1b1e24;
-    --footer: #596070;
-    --c-X: #2c3038;
-  }
-  html[data-theme="pro"] body { background: var(--bg1); }
-  html[data-theme="pro"] header h1 .grad { background: none; color: var(--text); }
-  html[data-theme="pro"] .tab { border-radius: 10px; }
-  html[data-theme="pro"] .tab.on { box-shadow: none; }
-  html[data-theme="pro"] .stage3d, html[data-theme="pro"] .card { border-radius: 14px; }
-  html[data-theme="pro"] button.btn.primary,
-  html[data-theme="pro"] .scanChoiceCard a.btn.primary { box-shadow: none; }
-  html[data-theme="pro"] .mv.cur { box-shadow: none; }
-  html[data-theme="pro"] .swatch { border-color: rgba(255, 255, 255, 0.1); }
-
+  /* ---- light theme ("paper"): white cards on pale gray, ink text, blue
+     accent, soft shadows. Resolved into html[data-theme] by the script in
+     index.html: URL ?theme= > saved toggle choice > system preference. ---- */
   /* "light": clean paper — white cards on pale gray, blue accent,
      ink text, soft shadows */
   html[data-theme="light"] {
     --bg1: #f2f4f7;
-    --bg2: #ffffff;
     --card: #ffffff;
     --card-border: #e0e4ea;
     --text: #1c222e;
@@ -343,8 +347,6 @@
     --footer: #9aa2b1;
     --c-X: #c9cfd9;
   }
-  html[data-theme="light"] body { background: var(--bg1); }
-  html[data-theme="light"] .tab.on { box-shadow: 0 2px 10px rgba(37, 99, 235, 0.25); }
   html[data-theme="light"] .stage3d,
   html[data-theme="light"] #solution .playbar { box-shadow: 0 8px 24px rgba(20, 30, 60, 0.08); }
   html[data-theme="light"] .swatch { border-color: rgba(0, 0, 0, 0.12); }
