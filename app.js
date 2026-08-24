@@ -1056,6 +1056,25 @@
     render();
   }
 
+  // per-stage "why this works" — the understanding the move lists alone don't
+  // give. Keyed by stage name (shared stages appear in several modes).
+  const WHY = {
+    'White Cross': 'Edges carry two stickers, so a cross piece is only right when its side colour matches the side centre too — not just white-on-bottom. The cross goes first because it costs nothing: with everything else unsolved, each edge can drop straight in with nothing to protect.',
+    'White Corners': 'The repeating R′ D′ R D trick lifts a corner out, turns its slot underneath it, and re-inserts it — each repeat rotates the corner one step. It never disturbs the finished cross because everything else it touches is still unsolved.',
+    'Middle Layer': 'The middle layer is only four edges — the centres never move on a 3×3. The insert sequence brings an edge down from the top and swaps it into its slot while shuffling top-layer pieces only, so the solved layer below survives untouched.',
+    'Yellow Cross': 'F R U R′ U′ F′ flips top edges in place. Started from the right shape (dot → L → line), each pass flips exactly the edges needed to grow the cross — and every move that touches the solved layers is undone before the sequence ends.',
+    'Yellow Edges': 'This sequence cycles three top edges and touches nothing below. Lining up one correct edge first turns "several wrong" into a single three-piece cycle, which the sequence finishes in one or two passes.',
+    'Yellow Corners': 'U R U′ L′ U R′ U′ L is a commutator: it does a small job, does a second job, then undoes both — and the leftover difference is exactly a three-corner cycle on top, with the rest of the cube returned to how it was.',
+    'Final Twist': 'Repeating R′ D′ R D twists the held corner but appears to wreck the layers below. It hasn’t: corner twists on a legal cube must total a multiple of three, so by the time the last corner is turned right, the damage below has exactly cancelled itself out. That’s why you must never rotate the whole cube mid-stage — only the top layer.',
+    'Solve the Centers': 'Unlike a 3×3, a 4×4 has no fixed centres — the middle pieces travel. They come first because centre blocks only need each other to assemble, and once built they decide which colour every face will be for the rest of the solve.',
+    'Pair the Edges': 'Every 4×4 edge is two separate wing pieces. A slice move brings matching wings side by side, an outer turn stores the finished pair out of the way, and the slice is undone — repeat until all twelve edges are whole and the cube behaves exactly like a 3×3.',
+    'Flip Parity': 'A single flipped edge is impossible on a 3×3 — but this "edge" is secretly two pieces that were paired in a mirrored way. The long inner-slice sequence re-splits the pair and re-joins it the right way round.',
+    'Swap Parity': 'Two edges swapped with nothing else wrong can’t happen on a 3×3 either. On a 4×4 the identical-looking centre pieces silently absorbed the difference — this sequence trades the visible swap back into the invisible centres.',
+    'Bottom Layer': 'With no fixed centres, only the pieces’ relative positions matter. Holding the back-bottom-left piece still removes whole-cube spins from the puzzle — every other piece is then solved relative to that anchor.',
+    'Top Color Up': 'R′ D′ R D twists one corner at a time. The bottom looks damaged in between, but a legal cube only allows total twist in multiples of three — when the last corner is set, the bottom snaps back by itself.',
+    'Level the Top': 'Same principle as twisting corners on a colour cube: each block is rotated in place until its height fits. Mid-sequence the bottom looks disturbed, but the twists must cancel by the end, so it returns exactly.',
+    'Final Positions': 'The closing sequences shuffle only top-layer pieces: every move that dips into the bottom is undone by its mirror later on. What remains is a pure cycle of the last pieces into their slots.',
+  };
   function buildSolutionUI() {
     stagelistEl.innerHTML = '';
     solution.stages.forEach((st, si) => {
@@ -1064,6 +1083,9 @@
       d.id = 'stg' + si;
       const chips = [];
       for (let i = st.start; i < st.end; i++) chips.push(`<span class="mv" id="mv${i}">${solution.moves[i]}</span>`);
+      const why = st.end > st.start && WHY[st.name]
+        ? `<details class="why"><summary>Why this works</summary><p>${WHY[st.name]}</p></details>`
+        : '';
       d.innerHTML = `
         <div class="shead">
           <div class="num">${si + 1}</div>
@@ -1071,6 +1093,7 @@
           <div class="scount">${st.end === st.start ? '✓ already done' : (st.end - st.start) + ' moves'}</div>
         </div>
         <div class="sdesc">${st.desc}</div>
+        ${why}
         <div class="smoves">${chips.join('')}</div>`;
       stagelistEl.appendChild(d);
     });
