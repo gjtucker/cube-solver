@@ -231,6 +231,20 @@
   }
   .scanProgress .pip.done { background: var(--good); border-color: var(--good); color: #06331b; }
   .scanProgress .pip.cur { border-color: #fff; color: #fff; box-shadow: 0 0 10px rgba(255,255,255,0.6); }
+  /* captured-face mini thumbnail inside a done pip */
+  .scanProgress .pip.done.thumb { background: rgba(0,0,0,0.5); padding: 2px; }
+  .pipgrid { display: grid; width: 100%; height: 100%; gap: 1px; border-radius: 4px; overflow: hidden; }
+  .pipgrid div { border-radius: 1px; }
+  /* one-line scanner status: the single place that says what is happening
+     (searching / blocked-and-why / hold-still / captured) */
+  .scanStatus {
+    display: inline-block; margin-bottom: 8px; padding: 6px 14px; border-radius: 999px;
+    font-size: 13.5px; font-weight: 700; color: #fff; background: rgba(0,0,0,0.55);
+    max-width: 92vw;
+  }
+  .scanStatus:empty { display: none; }
+  .scanStatus.ok { background: rgba(28,130,70,0.85); }
+  .scanStatus.warn { background: rgba(176,108,0,0.9); }
   .scanClose {
     font: inherit; font-size: 18px; width: 38px; height: 38px; border-radius: 50%;
     border: none; background: rgba(0,0,0,0.55); color: #fff; cursor: pointer;

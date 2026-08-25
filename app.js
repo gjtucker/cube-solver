@@ -1332,8 +1332,10 @@
     video: document.getElementById('scanVideo'),
     draw: document.getElementById('scanDraw'),
     progress: document.getElementById('scanProgress'),
+    status: document.getElementById('scanStatus'),
     title: document.getElementById('scanTitle'),
     hint: document.getElementById('scanHint'),
+    torch: document.getElementById('scanTorch'),
     close: document.getElementById('scanClose'),
     manual: document.getElementById('scanManual'),
     usePhoto: document.getElementById('scanUsePhoto'),
@@ -1371,10 +1373,32 @@
   function scanFaceLabel(i) { return ['F', 'R', 'B', 'L', 'U', 'D'][i]; }
   function updateScanUI() {
     scanEls.progress.innerHTML = '';
+    const n = SCAN.gridN(scan.scanMode);
     for (let i = 0; i < 6; i++) {
       const d = document.createElement('div');
       d.className = 'pip' + (i < scan.step ? ' done' : i === scan.step ? ' cur' : '');
-      d.textContent = i < scan.step ? '✓' : scanFaceLabel(i);
+      if (i < scan.step && scan.captureLabels && scan.captureLabels[i]) {
+        // captured: the pip becomes a mini thumbnail of what was read, so a
+        // misread face is visible the moment it happens (and Undo has a target)
+        d.classList.add('thumb');
+        const g = document.createElement('div');
+        g.className = 'pipgrid';
+        g.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
+        for (const l of scan.captureLabels[i]) {
+          const c = document.createElement('div');
+          c.style.background = l ? CSSCOLORS[l] : 'rgba(255,255,255,0.25)';
+          g.appendChild(c);
+        }
+        d.appendChild(g);
+      } else if (scan.scanMode === '3') {
+        // the 3×3 protocol names faces by colour ("Green face") — show the
+        // colour, not a notation letter
+        d.style.borderColor = CSSCOLORS[scanFaceLabel(i)];
+        if (i === scan.step) d.style.background = CSSCOLORS[scanFaceLabel(i)] + '55';
+      } else {
+        // relative modes have no fixed colours: number the six faces
+        d.textContent = i < scan.step ? '✓' : String(i + 1);
+      }
       scanEls.progress.appendChild(d);
     }
     const info = SCAN.stepInfo(scan.scanMode, Math.min(scan.step, 5), { mirror: scan.mirror });
@@ -1382,14 +1406,22 @@
     scanEls.hint.textContent = info.hint;
     scanEls.undo.style.display = scan.live && scan.step > 0 ? '' : 'none';
   }
+  function setScanStatus(text, kind) {
+    if (scanEls.status.textContent !== text) scanEls.status.textContent = text;
+    const cls = 'scanStatus' + (kind ? ' ' + kind : '');
+    if (scanEls.status.className !== cls) scanEls.status.className = cls;
+  }
 
   async function startScan() {
     scan.scanMode = mode;
-    scan.step = 0; scan.captures = []; scan.signatures = [];
+    scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
     scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
+    scan.stableSince = 0; scan.movedSinceCapture = false; scan.lastDetAt = 0;
     scan.track = null; scan.tracker.reset(); scan.frame = 0; scan.acc = null;
     scan.mirror = false; scan.facing = '';
     scan.active = true;
+    setScanStatus('', '');
+    try { scan.audio = scan.audio || new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {}
     scanEls.overlay.classList.add('on');
     scanEls.photoStage.style.display = 'none';
     scanEls.choice.style.display = 'none';
@@ -1422,6 +1454,12 @@
     scanEls.video.style.display = '';
     scanEls.manual.style.display = '';
     scanEls.mirror.style.display = '';
+    // flashlight, where the camera supports it (mostly phone back cameras)
+    try {
+      const caps = track && track.getCapabilities && track.getCapabilities();
+      scanEls.torch.style.display = caps && caps.torch ? '' : 'none';
+      scan.torchTrack = caps && caps.torch ? track : null;
+    } catch (_) { scanEls.torch.style.display = 'none'; }
     applyMirror();
     scanLoop();
   }
@@ -1473,6 +1511,13 @@
     scan.track = null;
     scan.tracker.reset();
     scan.source = null;
+    // a reopened scanner (or the camera-denied card) must not sit on the
+    // previous session's frozen grid
+    const dctx = scanEls.draw.getContext('2d');
+    dctx.clearRect(0, 0, scanEls.draw.width, scanEls.draw.height);
+    setScanStatus('', '');
+    scanEls.torch.style.display = 'none';
+    scanEls.torch.classList.remove('active');
     scanEls.overlay.classList.remove('on');
     scanEls.photoStage.style.display = 'none';
     scanEls.choice.style.display = 'none';
@@ -1561,7 +1606,7 @@
 
   const CSSCOLORS = { U: '#ffd500', D: '#f4f4f4', F: '#00a651', B: '#1163d8', R: '#ff7a00', L: '#e0244a' };
   // draws a (possibly rotated) grid square with the live colour dots
-  function drawGridSquare(ctx, g, n, labels, color, dashed) {
+  function drawGridSquare(ctx, g, n, labels, color, dashed, progress) {
     const cx = g.x + g.size / 2, cy = g.y + g.size / 2, s = g.size, cs = s / n;
     ctx.save();
     ctx.translate(cx, cy);
@@ -1571,6 +1616,15 @@
     if (dashed) ctx.setLineDash([10, 8]);
     ctx.strokeRect(-s / 2, -s / 2, s, s);
     ctx.setLineDash([]);
+    if (progress > 0) {
+      // the hold-still countdown fills the square's own border — always on
+      // screen, unlike a ring that outgrows small viewports
+      ctx.setLineDash([progress * 4 * s, 4 * s]);
+      ctx.strokeStyle = '#3ddc84';
+      ctx.lineWidth = 6;
+      ctx.strokeRect(-s / 2, -s / 2, s, s);
+      ctx.setLineDash([]);
+    }
     ctx.lineWidth = 1;
     ctx.globalAlpha = 0.7;
     for (let i = 1; i < n; i++) {
@@ -1624,7 +1678,13 @@
     const fr = grabFrame();
     if (fr) {
       scan.frame++;
-      if (scan.frame % 2 === 0 || !scan.track) updateTrack(fr, n, now);
+      // time-gate the (8ms-ish) detector so 120Hz displays don't run it at
+      // double rate against a 30fps camera; the cheap grid sampling below
+      // still runs every frame so the overlay stays perfectly smooth
+      if (!scan.track || now - (scan.lastDetAt || 0) >= 60) {
+        updateTrack(fr, n, now);
+        scan.lastDetAt = now;
+      }
       const tracked = !!scan.track;
       const rect = currentRect(fr.f);
       const res = SCAN.sampleGrid(fr.px, rect, n);
@@ -1677,6 +1737,7 @@
         scan.stable++;
       } else {
         scan.stable = gates ? 1 : 0;
+        scan.stableSince = now;
         scan.lastSig = sig;
       }
       scan.diag = { allKnown, calm, bordered, dup, centerOK, latticeLock, sig, stable: scan.stable, cellVar: res.cellVar.map(Math.round), borderDark: +res.borderDarkRatio.toFixed(2) };
@@ -1688,13 +1749,48 @@
         scan.acc.n++;
       }
       const info = SCAN.stepInfo(scan.scanMode, Math.min(scan.step, 5), { mirror: scan.mirror });
-      const hint = dup && allKnown && calm
-        ? 'This looks like a face you already scanned — show the next one (or, if it really is a different face that just looks the same, use Capture now).'
-        : !centerOK && allKnown && calm && tracked
-          ? `That looks like the ${COLOR_NAMES[centerRead]} face — show the ${COLOR_NAMES[expected]} one now (or use Capture now to override).`
-          : info.hint;
+      // one visible state machine: post-capture confirmation, capturing,
+      // blocked (with the top reason in plain words), or searching. The face
+      // still in view right after a capture is EXPECTED, not a duplicate —
+      // that moment shows "captured ✓" plus the next rotation instruction,
+      // which is exactly when the user decides how to move the cube.
+      const justCaptured = scan.captures.length > 0 && !scan.movedSinceCapture;
+      const HOLD_MS = 280, MIN_FRAMES = 4;
+      const held = scan.stable >= MIN_FRAMES && now - scan.stableSince >= HOLD_MS;
+      const progress = scan.stable > 0 ? Math.min(1, Math.min(scan.stable / MIN_FRAMES, (now - scan.stableSince) / HOLD_MS)) : 0;
+      let state, statusText, statusKind = '';
+      if (justCaptured && scan.step > 0) {
+        state = 'captured';
+        const done = SCAN.stepInfo(scan.scanMode, scan.step - 1, { mirror: scan.mirror });
+        statusText = `✓ ${done.title} captured — now: face ${Math.min(scan.step + 1, 6)}`;
+        statusKind = 'ok';
+      } else if (!tracked) {
+        state = 'searching';
+        statusText = now - scan.startedAt > 1500 ? '🔍 Looking for the cube — hold it flat, facing the camera' : '🔍 Looking for the cube…';
+      } else if (gates) {
+        state = 'capturing';
+        statusText = 'Hold still…';
+        statusKind = 'ok';
+      } else {
+        state = 'blocked';
+        statusKind = 'warn';
+        statusText = dup
+          ? 'Already scanned this face — show another (Capture now overrides)'
+          : !centerOK && centerRead
+            ? `That’s the ${COLOR_NAMES[centerRead]} face — show the ${COLOR_NAMES[expected]} one`
+            : !allKnown
+              ? 'A sticker reads too dark — add light or tilt out of shadow'
+              : !calm
+                ? 'Glare or blur on a sticker — tilt the cube slightly'
+                : 'Can’t confirm the sticker edges — move a little closer';
+      }
+      setScanStatus(statusText, statusKind);
+      const hint = dup && scan.movedSinceCapture && allKnown && calm
+        ? 'If it really is a different face that just looks the same, use Capture now.'
+        : info.hint;
       if (scanEls.hint.textContent !== hint) scanEls.hint.textContent = hint;
-      // overlay: dim outside the square, grid, status
+      // overlay: dim outside the square, grid (searching = dashed white,
+      // blocked = amber, ready/capturing = green with the border filling up)
       const g = sampleToScreen(rect, fr.f);
       const s = g.size, gcx = g.x + s / 2, gcy = g.y + s / 2;
       ctx.save();
@@ -1706,29 +1802,18 @@
       ctx.restore();
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
       ctx.fill('evenodd');
-      drawGridSquare(ctx, g, n, labels, tracked ? '#3ddc84' : 'rgba(255,255,255,0.85)', !tracked);
-      const t = scan.track;
-      const status = !tracked
-        ? (now - scan.startedAt > 1500 ? '🔍 Looking for the cube — hold it flat, facing the camera' : '🔍 Looking for the cube…')
-        : t.single ? '✓ Cube found — plain face' : `✓ Cube locked · ${t.count}/${t.total} stickers`;
-      drawPill(ctx, status, gcx, Math.min(draw.height - 150, gcy + s * 0.72 + 30));
-      // stability arc
-      const NEED = 10;
+      const boxColor = !tracked ? 'rgba(255,255,255,0.85)'
+        : state === 'blocked' ? '#ffb020'
+        : '#3ddc84';
+      drawGridSquare(ctx, g, n, labels, boxColor, !tracked, state === 'capturing' ? progress : 0);
       if (scan.debugUI) {
         // ?debug: which auto-capture gate is failing right now
         const b = (x) => (x ? '✓' : '✗');
         drawPill(ctx,
-          `trk${b(tracked)} lat${b(latticeLock)} known${b(allKnown)} calm${b(calm)} brd${b(bordered)} ctr${b(centerOK)} dup${dup ? '!' : '·'} ${scan.stable}/${NEED}`,
-          gcx, Math.min(draw.height - 118, gcy + s * 0.72 + 62));
+          `trk${b(tracked)} lat${b(latticeLock)} known${b(allKnown)} calm${b(calm)} brd${b(bordered)} ctr${b(centerOK)} dup${dup ? '!' : '·'} ${scan.stable}f/${Math.round(now - scan.stableSince)}ms`,
+          gcx, Math.min(draw.height - 118, gcy + s * 0.72 + 34));
       }
-      if (scan.stable > 0 && now >= scan.cooldownUntil) {
-        ctx.beginPath();
-        ctx.strokeStyle = '#3ddc84';
-        ctx.lineWidth = 5;
-        ctx.arc(gcx, gcy, s * 0.71 + 14, -Math.PI / 2, -Math.PI / 2 + (Math.min(scan.stable, NEED) / NEED) * Math.PI * 2);
-        ctx.stroke();
-      }
-      if (scan.stable >= NEED && now >= scan.cooldownUntil) {
+      if (held && now >= scan.cooldownUntil) {
         const k = scan.acc.n;
         captureFace(scan.acc.sum.map((c) => [c[0] / k, c[1] / k, c[2] / k]), sig);
       }
@@ -1737,18 +1822,38 @@
 
   function captureFace(cells, sig) {
     scan.captures.push(cells.map((c) => c.slice()));
+    scan.captureLabels.push(cells.map((c) => SCAN.hueClass(c)));
     scan.signatures.push(sig || 'manual' + scan.step);
     scan.step++;
     scan.stable = 0;
     scan.acc = null;
     scan.movedSinceCapture = false;
-    scan.cooldownUntil = performance.now() + 1300;
+    // short settle time only — double-captures are already blocked by the
+    // duplicate-signature and centre gates, so the cooldown needn't be long
+    scan.cooldownUntil = performance.now() + 600;
     const fl = document.getElementById('scanFlash');
     fl.style.transition = 'none'; fl.style.opacity = '0.85';
     requestAnimationFrame(() => { fl.style.transition = 'opacity 0.35s ease-out'; fl.style.opacity = '0'; });
     if (navigator.vibrate) navigator.vibrate(60);
+    scanBeep();   // iOS has no vibrate — sound is the non-visual confirmation
     if (scan.step >= 6) { finishScan(); return; }
     updateScanUI();
+  }
+  // short confirmation blip (the AudioContext is created on the Scan tap,
+  // inside a user gesture, so autoplay policies allow it)
+  function scanBeep() {
+    try {
+      const ac = scan.audio;
+      if (!ac) return;
+      if (ac.state === 'suspended') ac.resume();
+      const o = ac.createOscillator(), gn = ac.createGain();
+      o.frequency.value = 880;
+      gn.gain.setValueAtTime(0.12, ac.currentTime);
+      gn.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.12);
+      o.connect(gn).connect(ac.destination);
+      o.start();
+      o.stop(ac.currentTime + 0.13);
+    } catch (_) {}
   }
 
   // is this paint state a real, solvable cube? (pieces + parity)
@@ -1790,6 +1895,9 @@
     } else {
       showMsg('Scanned! Compare the 3D cube with yours — tap any wrong sticker to fix it, then hit Solve.', 'ok');
     }
+    // the overlay vanishes abruptly — make sure the outcome is on screen
+    // (on phones the message card can sit fully below the fold)
+    msgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
   // ---- mirrored preview (front cameras) ----
@@ -1803,6 +1911,13 @@
     scan.mirror = !scan.mirror;
     try { localStorage.setItem('cubeScanMirror:' + (scan.facing || 'unknown'), scan.mirror ? '1' : '0'); } catch (_) {}
     applyMirror();
+  });
+  scanEls.torch.addEventListener('click', async () => {
+    const on = !scanEls.torch.classList.contains('active');
+    try {
+      await scan.torchTrack.applyConstraints({ advanced: [{ torch: on }] });
+      scanEls.torch.classList.toggle('active', on);
+    } catch (_) {}
   });
 
   // ---- photo fallback ----
@@ -1924,6 +2039,7 @@
     // drop the last captured face (a double-tap or a wrong face) and redo it
     if (!scan.captures.length || scan.step >= 6) return;
     scan.captures.pop();
+    scan.captureLabels.pop();
     scan.signatures.pop();
     scan.step--;
     scan.stable = 0;
@@ -1975,9 +2091,10 @@
     async scanStartWithStream(stream) {
       await waitIdle(); exitPlayback(); clearMsg();
       scan.scanMode = mode;
-      scan.step = 0; scan.captures = []; scan.signatures = [];
+      scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
       scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
       scan.track = null; scan.tracker.reset(); scan.frame = 0; scan.acc = null;
+      scan.stableSince = 0; scan.movedSinceCapture = false; scan.lastDetAt = 0;
       scan.active = true;
       scanEls.overlay.classList.add('on');
       scanEls.photoStage.style.display = 'none';
@@ -1990,9 +2107,10 @@
     scanStartSynthetic(canvas, o) {
       o = o || {};
       scan.scanMode = mode;
-      scan.step = 0; scan.captures = []; scan.signatures = [];
+      scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
       scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
       scan.track = null; scan.tracker.reset(); scan.frame = 0; scan.acc = null;
+      scan.stableSince = 0; scan.movedSinceCapture = false; scan.lastDetAt = 0;
       scan.active = true; scan.live = true; scan.source = canvas;
       scan.mirror = !!o.mirror; scan.startedAt = performance.now();
       scanEls.overlay.classList.add('on');
@@ -2004,7 +2122,16 @@
       applyMirror();
       updateScanUI();
     },
-    scanTick() { if (!scan.active || !scan.live) return false; scan.cooldownUntil = 0; scanFrame(); return true; },
+    scanTick() {
+      if (!scan.active || !scan.live) return false;
+      scan.cooldownUntil = 0;
+      scan.lastDetAt = 0;
+      // synthetic ticks run back-to-back; simulate ~40ms/frame pacing so the
+      // hold-still time window behaves as it would on a real camera
+      if (scan.stable > 0) scan.stableSince -= 40;
+      scanFrame();
+      return true;
+    },
     scanManualCapture() { scanEls.manual.click(); },
     scanInject(scanMode, captures) {
       // test hook: feed raw per-face capture cell colors straight through the pipeline
