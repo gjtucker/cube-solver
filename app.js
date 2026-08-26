@@ -88,9 +88,11 @@
         return red.length + (meta.par ? 15 : 0) + (meta.pll ? 7 : 0);
       } catch (_) { return red.length; }
     },
-    // "Search harder": the deep portfolio queued over the pool, then the top
-    // distinct reductions (ranked by true cost) each get their own generous
-    // 3×3 finish; shortest total wins. ~30-60s. Returns null if workers are
+    // "Search harder": exact-phase-3 deep reductions across the three
+    // color-axis rotations (each worker builds its big pruning tables on
+    // first use, ~3s, and keeps them), then the top distinct reductions each
+    // get their own generous 3×3 finish; shortest total wins. ~10-20s.
+    // The beam portfolio remains the fallback. Returns null if workers are
     // unavailable.
     async solveHard(state, onProgress) {
       if (typeof Worker === 'undefined') return null;
@@ -98,21 +100,37 @@
       const tables = await this.loadTables();
       const n = Math.min(TPR4.PORTFOLIO.length, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
       const pool = this.getPool(n, tables);
-      const reds = await this.mapPool(pool, TPR4.PORTFOLIO_DEEP,
-        (cfg) => ({ t: 'reduce', state, cfg }),
-        (done, total) => onProgress && onProgress(done, total + 1));
-      const good = reds.map((r) => r && r.red).filter(Boolean)
-        .map((red) => ({ red, cost: this.reductionCost(state, red) }))
-        .sort((a, b) => a.cost - b.cost);
-      if (!good.length) return null;
-      const picks = [];
-      for (const { red } of good) {
-        if (!picks.some((p) => p.join(' ') === red.join(' '))) picks.push(red);
-        if (picks.length === 4) break;
+      const STEPS = 5; // 3 rotations + finish + done
+      const deepRes = await this.mapPool(pool, [0, 1, 2],
+        (rotate) => ({ t: 'deep', state, cfg: { rotate, tries: 3, solutions: 4, results: 4 } }),
+        (done) => onProgress && onProgress(done, STEPS));
+      const cands = [];
+      for (const r of deepRes) if (r && r.reds) for (const red of r.reds) cands.push(red);
+      let picks = [];
+      if (cands.length) {
+        cands.sort((a, b) => a.length - b.length);
+        for (const red of cands) {
+          if (!picks.some((p) => p.join(' ') === red.join(' '))) picks.push(red);
+          if (picks.length === 6) break;
+        }
+      } else {
+        // fallback: beam-search portfolio, ranked by true cost
+        const reds = await this.mapPool(pool, TPR4.PORTFOLIO_DEEP,
+          (cfg) => ({ t: 'reduce', state, cfg }),
+          (done, total) => onProgress && onProgress(3, STEPS));
+        const good = reds.map((r) => r && r.red).filter(Boolean)
+          .map((red) => ({ red, cost: this.reductionCost(state, red) }))
+          .sort((a, b) => a.cost - b.cost);
+        if (!good.length) return null;
+        for (const { red } of good) {
+          if (!picks.some((p) => p.join(' ') === red.join(' '))) picks.push(red);
+          if (picks.length === 4) break;
+        }
       }
-      const budget3 = { timeLimit: 4000, target: 18, minSearch: 1500 };
+      if (onProgress) onProgress(4, STEPS);
+      const budget3 = { timeLimit: 5000, target: 17, minSearch: 1500 };
       const fins = await this.mapPool(pool, picks, (red) => ({ t: 'finish', state, red, budget3 }));
-      if (onProgress) onProgress(TPR4.PORTFOLIO_DEEP.length + 1, TPR4.PORTFOLIO_DEEP.length + 1);
+      if (onProgress) onProgress(STEPS, STEPS);
       let best = null;
       for (const f of fins) {
         if (f && f.res && !f.res.error && f.res.moves && (!best || f.res.moves.length < best.moves.length)) best = f.res;

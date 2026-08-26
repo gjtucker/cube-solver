@@ -1123,12 +1123,629 @@ const TPR4 = (() => {
     return { par: wingParity8(s8), pll: pllParity8(s8) };
   }
 
+  // ======================= deep engine (exact phase 3) =======================
+  // Replaces beam search with IDA* over two admissible tables, following the
+  // structure of Tsai/TPR-style solvers (implemented clean-room from the
+  // published design):
+  //
+  //  - G3 = SET24 minus the four R/L outer quarter turns (20 moves). Under G3
+  //    the 24 wing positions split into two invariant 12-position halves, one
+  //    position of each dedge per half. With A = (dedge of the wing on each
+  //    A-half position) and B likewise, rel = B⁻¹∘A ∈ S12 is conjugated by
+  //    every G3 move and rel = identity ⇔ every edge is paired. Only the even
+  //    half of S12 is reachable; a BFS to depth 8 (~3.4M states) gives an
+  //    admissible edge-pairing heuristic ("≥9" beyond).
+  //  - centers carry a parity bit (corner parity XOR parity(A)) that equals
+  //    the eventual PLL parity of the reduction and flips on exactly the six
+  //    slice doubles; the center+parity table is the exact G3 distance over
+  //    70³×2, so phase 3 lands parity-free reductions by construction.
+  //  - phase-1/2 heads almost never satisfy the half-split, so a short
+  //    "bridge" (avg ~4 moves, IDDFS over SET24 which preserves the phase-1/2
+  //    invariants) makes them G3-feasible first.
+  const RL_QUARTERS = ['R', "R'", 'L', "L'"].map((t) => MOVE_INDEX[t]);
+  const G3 = SET24.filter((mi) => !RL_QUARTERS.includes(mi));
+  const AXIS_OF_FACE = { U: 0, u: 0, d: 0, D: 0, R: 1, r: 1, l: 1, L: 1, F: 2, f: 2, b: 2, B: 2 };
+  const LAYER_OF_FACE = { U: 0, u: 1, d: 2, D: 3, R: 0, r: 1, l: 2, L: 3, F: 0, f: 1, b: 2, B: 3 };
+
+  const POPC12 = new Uint8Array(4096);
+  for (let i = 1; i < 4096; i++) POPC12[i] = POPC12[i >> 1] + (i & 1);
+
+  function permParity(p) {
+    let inv = 0;
+    for (let i = 0; i < p.length; i++) for (let j = i + 1; j < p.length; j++) if (p[i] > p[j]) inv++;
+    return inv & 1;
+  }
+  // S12 Lehmer rank; consecutive ranks {2k,2k+1} differ by one transposition,
+  // so rank>>1 is a perfect index for the even half.
+  function rankPerm12(p) {
+    let used = 0, r = 0;
+    for (let i = 0; i < 11; i++) {
+      const v = p[i];
+      r = r * (12 - i) + (v - POPC12[used & ((1 << v) - 1)]);
+      used |= 1 << v;
+    }
+    return r;
+  }
+  function unrankPerm12(r, out) {
+    const digits = new Array(11);
+    for (let i = 10; i >= 0; i--) { const radix = 12 - i; digits[i] = r % radix; r = (r - digits[i]) / radix; }
+    const avail = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+    for (let i = 0; i < 11; i++) out[i] = avail.splice(digits[i], 1)[0];
+    out[11] = avail[0];
+    return out;
+  }
+
+  // ---- static structure (independent of tables): half-split + move actions ----
+  let DEEP = null; // built lazily by deepStructure()
+  function deepStructure() {
+    if (DEEP) return DEEP;
+    // orbit of position 0 under G3 = the A half
+    const isA = new Array(NW).fill(false);
+    {
+      const stack = [0];
+      isA[0] = true;
+      while (stack.length) {
+        const p = stack.pop();
+        for (const mi of G3) {
+          const q = wingPerm[mi][p];
+          if (!isA[q]) { isA[q] = true; stack.push(q); }
+        }
+      }
+    }
+    const posA = new Int8Array(12).fill(-1), posB = new Int8Array(12).fill(-1);
+    let sizeA = 0;
+    for (let p = 0; p < NW; p++) {
+      const d = WING_DEDGE[p];
+      if (isA[p]) { sizeA++; if (posA[d] >= 0) throw new Error('deep: dedge doubled in A half'); posA[d] = p; }
+      else { if (posB[d] >= 0) throw new Error('deep: dedge doubled in B half'); posB[d] = p; }
+    }
+    if (sizeA !== 12) throw new Error('deep: half-split orbit size ' + sizeA);
+    // per-G3-move action on the halves in dedge space: rel' = tau ∘ rel ∘ sigma⁻¹
+    const sigmaInv = {}, tau = {};
+    for (const mi of G3) {
+      const s = new Uint8Array(12), t = new Uint8Array(12), si = new Uint8Array(12);
+      for (let d = 0; d < 12; d++) {
+        const npA = wingPerm[mi][posA[d]];
+        const npB = wingPerm[mi][posB[d]];
+        if (!isA[npA] || isA[npB]) throw new Error('deep: half leak under ' + MOVES36[mi]);
+        s[d] = WING_DEDGE[npA];
+        t[d] = WING_DEDGE[npB];
+      }
+      for (let d = 0; d < 12; d++) si[s[d]] = d;
+      sigmaInv[mi] = si; tau[mi] = t;
+    }
+    // per-SET24-move axis-mask transition tables (256-entry, per axis) and
+    // corner/parity flip flags (bridge search uses all of SET24; G3 ⊂ SET24)
+    const maskT = {};
+    for (const mi of SET24) {
+      const T = [];
+      for (const ax of ['UD', 'LR', 'FB']) {
+        const p8 = axisPerm[ax][mi];
+        const tab = new Uint8Array(256);
+        for (let m = 0; m < 256; m++) {
+          let nm = 0;
+          for (let i = 0; i < 8; i++) if (m & (1 << i)) nm |= 1 << p8[i];
+          tab[m] = nm;
+        }
+        T.push(tab);
+      }
+      maskT[mi] = T;
+    }
+    const sliceDouble = {}, cparFlip = {};
+    for (const mi of SET36) {
+      const m = MOVES36[mi];
+      sliceDouble[mi] = (m[0] >= 'a' && m[0] <= 'z' && m[1] === '2') ? 1 : 0;
+      cparFlip[mi] = (m[0] === m[0].toUpperCase() && m[1] !== '2') ? 1 : 0;
+    }
+    // corner identification (for the parity bit): color-set mask -> corner id
+    const cornerStk = C4.CORNERS.map((c) => Object.values(c.stickers));
+    const cornerByMask = {};
+    {
+      const solved8 = encode96(C4.solvedState(), { U: 'U', R: 'R', F: 'F', D: 'D', L: 'L', B: 'B' });
+      cornerStk.forEach((stk, i) => {
+        let mask = 0;
+        for (const s of stk) mask |= 1 << solved8[s];
+        cornerByMask[mask] = i;
+      });
+    }
+    DEEP = { isA, posA, posB, sigmaInv, tau, maskT, sliceDouble, cparFlip, cornerStk, cornerByMask };
+    return DEEP;
+  }
+
+  function cornerParity8(s8) {
+    const { cornerStk, cornerByMask } = deepStructure();
+    const perm = new Array(8);
+    for (let i = 0; i < 8; i++) {
+      let mask = 0;
+      for (const s of cornerStk[i]) mask |= 1 << s8[s];
+      const id = cornerByMask[mask];
+      if (id === undefined) return -1;
+      perm[i] = id;
+    }
+    return permParity(perm);
+  }
+
+  function axisMasks8(s8, out) {
+    out = out || [0, 0, 0];
+    out[0] = 0; out[1] = 0; out[2] = 0;
+    for (let a = 0; a < 3; a++) {
+      const L = AXIS_LIST[a];
+      for (let i = 0; i < 8; i++) if (s8[CENTER_STICKER8[L.pos[i]]] === L.positive) out[a] |= 1 << i;
+    }
+    return out;
+  }
+
+  // ---- deep pruning tables (lazy; ~3-5s once, then cached in the worker) ----
+  const EDGE_DEPTH = 8;          // BFS horizon: ~3.4M states, "≥9" beyond
+  const EDGE_CAP = 1 << 23;      // open-addressed hash capacity (load ~0.40)
+  let edgeHash = null;           // Uint32Array: (evenRank<<4)|(depth+1), 0=empty
+  let cpDist = null;             // Uint8Array(70*70*70*2) exact G3 distances
+  function edgeInsert(evenRank, depth) {
+    let h = (Math.imul(evenRank, 0x9E3779B1) >>> 9) & (EDGE_CAP - 1);
+    const v = ((evenRank << 4) | (depth + 1)) >>> 0;
+    for (;;) {
+      const cur = edgeHash[h];
+      if (cur === 0) { edgeHash[h] = v; return true; }
+      if ((cur >>> 4) === evenRank) return false;
+      h = (h + 1) & (EDGE_CAP - 1);
+    }
+  }
+  function edgeLookup(evenRank) {
+    let h = (Math.imul(evenRank, 0x9E3779B1) >>> 9) & (EDGE_CAP - 1);
+    for (;;) {
+      const cur = edgeHash[h];
+      if (cur === 0) return EDGE_DEPTH + 1;
+      if ((cur >>> 4) === evenRank) return (cur & 15) - 1;
+      h = (h + 1) & (EDGE_CAP - 1);
+    }
+  }
+  function buildEdgeHash(progress) {
+    const { sigmaInv, tau } = deepStructure();
+    edgeHash = new Uint32Array(EDGE_CAP);
+    const id = new Uint8Array(12);
+    for (let i = 0; i < 12; i++) id[i] = i;
+    let frontier = new Uint32Array([rankPerm12(id)]); // full ranks
+    edgeInsert(frontier[0] >>> 1, 0);
+    const p = new Uint8Array(12), q = new Uint8Array(12);
+    for (let d = 0; d < EDGE_DEPTH; d++) {
+      const next = new Uint32Array(Math.max(64, frontier.length * 12));
+      let n = 0;
+      for (let fi = 0; fi < frontier.length; fi++) {
+        unrankPerm12(frontier[fi], p);
+        for (const mi of G3) {
+          const si = sigmaInv[mi], t = tau[mi];
+          for (let x = 0; x < 12; x++) q[x] = t[p[si[x]]];
+          const nr = rankPerm12(q);
+          if (edgeInsert(nr >>> 1, d + 1)) next[n++] = nr;
+        }
+      }
+      frontier = next.subarray(0, n);
+      if (progress) progress('edge table depth ' + (d + 1), n);
+    }
+  }
+  function buildCpTable() {
+    const { maskT, sliceDouble } = deepStructure();
+    cpDist = new Uint8Array(70 * 70 * 70 * 2).fill(255);
+    const cpIdx = (a, b, c, bit) => ((rank8(a) * N70 + rank8(b)) * N70 + rank8(c)) * 2 + bit;
+    const g = [AXIS_GOAL.UD, AXIS_GOAL.LR, AXIS_GOAL.FB, 0];
+    cpDist[cpIdx(g[0], g[1], g[2], 0)] = 0;
+    let frontier = [g];
+    let d = 0;
+    while (frontier.length) {
+      const next = [];
+      for (const [a, b, c, bit] of frontier) {
+        for (const mi of G3) {
+          const T = maskT[mi];
+          const na = T[0][a], nb = T[1][b], nc = T[2][c], nbit = bit ^ sliceDouble[mi];
+          const idx = cpIdx(na, nb, nc, nbit);
+          if (cpDist[idx] === 255) { cpDist[idx] = d + 1; next.push([na, nb, nc, nbit]); }
+        }
+      }
+      frontier = next;
+      d++;
+    }
+    return cpDist;
+  }
+  let deepTablesBuilt = false;
+  function deepInit(progress) {
+    if (deepTablesBuilt) return;
+    if (!built) buildAll(progress);
+    deepStructure();
+    const t0 = Date.now();
+    buildCpTable();
+    if (progress) progress('center+parity table', Date.now() - t0);
+    buildEdgeHash(progress);
+    if (progress) progress('edge pairing table', Date.now() - t0);
+    deepTablesBuilt = true;
+  }
+
+  const cpIndexOf = (a, b, c, bit) => ((rank8(a) * N70 + rank8(b)) * N70 + rank8(c)) * 2 + bit;
+
+  // relative pairing permutation of a state; null when the half-split
+  // bijection fails (some dedge has both wings in one half)
+  function relOf8(s8, out) {
+    const { posA, posB } = deepStructure();
+    const A = new Uint8Array(12), Binv = new Uint8Array(12);
+    let maskA = 0, maskB = 0;
+    for (let d = 0; d < 12; d++) {
+      const kA = s8[WING_STK8[posA[d]][0]] * 6 + s8[WING_STK8[posA[d]][1]];
+      const kB = s8[WING_STK8[posB[d]][0]] * 6 + s8[WING_STK8[posB[d]][1]];
+      const wA = WING_ID8[posA[d]][kA], wB = WING_ID8[posB[d]][kB];
+      if (wA < 0 || wB < 0) return null;
+      const dA = PAIR_OF_WING[wA], dB = PAIR_OF_WING[wB];
+      A[d] = dA;
+      Binv[dB] = d;
+      maskA |= 1 << dA; maskB |= 1 << dB;
+    }
+    if (maskA !== 0xfff || maskB !== 0xfff) return null;
+    const rel = out || new Uint8Array(12);
+    for (let d = 0; d < 12; d++) rel[d] = Binv[A[d]];
+    return { rel, aParity: permParity(A) };
+  }
+
+  // G3-feasibility of a state: half-split bijection, even rel, and
+  // centers+parity inside the G3-reachable coset
+  function deepFeasible8(s8) {
+    const r = relOf8(s8);
+    if (!r || permParity(r.rel) !== 0) return null;
+    const m = axisMasks8(s8);
+    const bit = cornerParity8(s8) ^ r.aParity;
+    if (cpDist[cpIndexOf(m[0], m[1], m[2], bit)] === 255) return null;
+    return { rel: r.rel, masks: m, bit };
+  }
+
+  // admissible lower bound on the moves still needed to clear half-split
+  // defects: only R/L outer quarters and u/d slice quarters move wings across
+  // the halves, at most 4 positions each, so >= ceil(defects/4) such moves
+  // remain while any dedge has both wings in one half
+  function defectBound(w) {
+    const { posA } = deepStructure();
+    let cnt = 0, seen = 0;
+    for (let d = 0; d < 12; d++) {
+      const dd = WING_DEDGE[w[posA[d]]];
+      if (seen & (1 << dd)) cnt++;
+      else seen |= 1 << dd;
+    }
+    return (cnt + 3) >> 2;
+  }
+
+  // G3-feasibility from incremental coordinates: wing permutation over the
+  // 24 positions, the three axis masks, corner parity
+  function feasibleFast(w, a0, a1, a2, cpar) {
+    const { posA, posB } = deepStructure();
+    let maskA = 0;
+    for (let d = 0; d < 12; d++) maskA |= 1 << WING_DEDGE[w[posA[d]]];
+    if (maskA !== 0xfff) return false;
+    const A = new Uint8Array(12), Binv = new Uint8Array(12), rel = new Uint8Array(12);
+    for (let d = 0; d < 12; d++) {
+      A[d] = WING_DEDGE[w[posA[d]]];
+      Binv[WING_DEDGE[w[posB[d]]]] = d;
+    }
+    for (let d = 0; d < 12; d++) rel[d] = Binv[A[d]];
+    if (permParity(rel) !== 0) return false;
+    const bit = cpar ^ permParity(A);
+    return cpDist[cpIndexOf(a0, a1, a2, bit)] !== 255;
+  }
+
+  // shortest SET24 sequence making a head G3-feasible ("bridge"): IDDFS on
+  // incremental coordinates (wing perm over positions, axis masks, corner
+  // parity). Callers sweep exact depths so cross-head minima come first.
+  function bridgeAtDepth(pre, depth) {
+    const { maskT, cparFlip } = deepStructure();
+    const feasible = feasibleFast;
+    if (depth === 0) return feasible(pre.w0, pre.m0[0], pre.m0[1], pre.m0[2], pre.cpar0) ? [] : null;
+    const wStack = pre.wStack || (pre.wStack = Array.from({ length: 8 }, () => new Uint8Array(NW)));
+    wStack[0].set(pre.w0);
+    const pathIdx = [];
+    const dfs = (g, a0, a1, a2, cpar, togo, lastLayer) => {
+      const w = wStack[g], nw = wStack[g + 1];
+      for (const mi of SET24) {
+        const tok = MOVES36[mi];
+        if (tok[0] === lastLayer) continue;
+        const wp = wingPerm[mi], T = maskT[mi];
+        for (let p = 0; p < NW; p++) nw[wp[p]] = w[p];
+        const na0 = T[0][a0], na1 = T[1][a1], na2 = T[2][a2], ncp = cpar ^ cparFlip[mi];
+        pathIdx.push(mi);
+        if (feasible(nw, na0, na1, na2, ncp)) return true;
+        if (togo > 1 && dfs(g + 1, na0, na1, na2, ncp, togo - 1, tok[0])) return true;
+        pathIdx.pop();
+      }
+      return false;
+    };
+    if (!dfs(0, pre.m0[0], pre.m0[1], pre.m0[2], pre.cpar0, depth, '')) return null;
+    return pathIdx.map((mi) => MOVES36[mi]);
+  }
+
+  // ---- joint phase-2 + feasibility search ----------------------------------
+  // Phase 2's classic goal (LR-class centers onto L∪R, even wing parity) does
+  // not make phase 3 startable. Instead of bolting a bridge after it, search
+  // phase 2 and G3-feasibility as ONE exact-depth problem over SET28 — SET24
+  // ⊂ SET28, so this strictly dominates phase2-then-bridge; dist2 remains an
+  // admissible prune. Centers ride along as 24-bit per-color masks (u/d
+  // quarter turns are representable there); at leaves (dist2 == 0) the color
+  // classes are separated, so they project exactly onto the three axis masks.
+  function deepHeads(state, scheme, opts = {}) {
+    const { cparFlip } = deepStructure();
+    const p1s = phase1Options(state, scheme, opts.p1cap || 36, opts.p1slack === undefined ? 1 : opts.p1slack);
+    if (!p1s.length) return [];
+    const CODE_U = 0, CODE_R = 1, CODE_F = 2, CODE_L = 4;
+    const preps = [];
+    for (const p1 of p1s) {
+      const s8 = encode96(p1.state, scheme);
+      const w0 = new Uint8Array(NW);
+      for (let p = 0; p < NW; p++) w0[p] = WING_ID8[p][s8[WING_STK8[p][0]] * 6 + s8[WING_STK8[p][1]]];
+      let mU = 0, mL = 0, mF = 0, mLR = 0;
+      for (let i = 0; i < NC; i++) {
+        const code = s8[CENTER_STICKER8[i]];
+        if (code === CODE_U) mU |= 1 << i;
+        if (code === CODE_L) mL |= 1 << i;
+        if (code === CODE_F) mF |= 1 << i;
+        if (code === CODE_L || code === CODE_R) mLR |= 1 << i;
+      }
+      let m16 = 0;
+      for (let i = 0; i < 16; i++) if (mLR & (1 << SIDE_POS[i])) m16 |= 1 << i;
+      const wpar = permParity(w0);
+      const d2 = dist2[rank16(m16) * 2 + wpar];
+      if (d2 === 255) continue;
+      preps.push({
+        moves: p1.moves, len: p1.moves.length, s8, w0, cpar0: cornerParity8(s8),
+        mU, mL, mF, m16, wpar, d2, lb0: Math.max(d2, defectBound(w0)),
+      });
+    }
+    if (!preps.length) return [];
+    const projAxis = (m24, axisName) => {
+      const pos = AXIS_POS[axisName];
+      let r = 0;
+      for (let i = 0; i < 8; i++) if (m24 & (1 << pos[i])) r |= 1 << i;
+      return r;
+    };
+    const headCap = opts.headCap || 8;
+    const perPrepCap = opts.perPrepCap || 3;
+    const out = [];
+    const seenEnd = new Set();
+    const wStack = Array.from({ length: 14 }, () => new Uint8Array(NW));
+    const pathMi = [];
+    let nodes = 0;
+    const nodeCap = opts.nodeCap || 3e6;
+    const collectFrom = (prep) => {
+      const s8b = new Uint8Array(prep.s8);
+      let cur = s8b;
+      for (const mi of pathMi) cur = apply8(cur, MOVES36[mi]);
+      const key = cur.join(',');
+      if (seenEnd.has(key)) return;
+      seenEnd.add(key);
+      const moves = C4.cleanAlg4(prep.moves.concat(pathMi.map((mi) => MOVES36[mi])));
+      const feas = deepFeasible8(cur);
+      if (!feas) return; // defensive; the incremental test said feasible
+      const lb = Math.max(edgeLookup(rankPerm12(feas.rel) >>> 1),
+        cpDist[cpIndexOf(feas.masks[0], feas.masks[1], feas.masks[2], feas.bit)]);
+      out.push({ moves, s8: cur, total: moves.length, lb });
+    };
+    const search = (prep, depth) => {
+      let found = 0;
+      wStack[0].set(prep.w0);
+      const dfs = (g, mU, mL, mF, m16, wpar, cpar, togo, lastAxis, lastLayer) => {
+        const w = wStack[g], nw = wStack[g + 1];
+        for (const mi of SET28) {
+          if (nodes > nodeCap || found >= perPrepCap || out.length >= headCap * 2) return;
+          const tok = MOVES36[mi];
+          const ax = AXIS_OF_FACE[tok[0]], ly = LAYER_OF_FACE[tok[0]];
+          if (ax === lastAxis && ly <= lastLayer) continue; // canonical order
+          nodes++;
+          const perm = sidePerm[mi];
+          let nm16 = 0;
+          for (let i = 0; i < 16; i++) if (m16 & (1 << i)) nm16 |= 1 << perm[i];
+          const npar = wpar ^ MOVE_ODD[mi];
+          const nd = dist2[rank16(nm16) * 2 + npar];
+          if (nd > togo - 1) continue;
+          const T = centerMask[mi];
+          const nmU = applyMask(T, mU), nmL = applyMask(T, mL), nmF = applyMask(T, mF);
+          const wp = wingPerm[mi];
+          for (let p = 0; p < NW; p++) nw[wp[p]] = w[p];
+          if (togo > 1 && defectBound(nw) > togo - 1) continue;
+          const ncpar = cpar ^ cparFlip[mi];
+          pathMi.push(mi);
+          if (togo === 1) {
+            const a0 = projAxis(nmU, 'UD'), a1 = projAxis(nmL, 'LR'), a2 = projAxis(nmF, 'FB');
+            if (feasibleFast(nw, a0, a1, a2, ncpar)) { collectFrom(prep); found++; }
+          } else {
+            dfs(g + 1, nmU, nmL, nmF, nm16, npar, ncpar, togo - 1, ax, ly);
+          }
+          pathMi.pop();
+        }
+      };
+      if (depth === 0) {
+        const a0 = projAxis(prep.mU, 'UD'), a1 = projAxis(prep.mL, 'LR'), a2 = projAxis(prep.mF, 'FB');
+        if (prep.d2 === 0 && feasibleFast(prep.w0, a0, a1, a2, prep.cpar0)) collectFrom(prep);
+        return;
+      }
+      dfs(0, prep.mU, prep.mL, prep.mF, prep.m16, prep.wpar, prep.cpar0, depth, -1, 9);
+    };
+    // sweep total length ascending across all phase-1 options so globally
+    // cheapest feasible heads surface first
+    const tBase = Math.min(...preps.map((p) => p.len + p.lb0));
+    let bestTotal = Infinity;
+    for (let t = tBase; t <= tBase + (opts.tExtra === undefined ? 5 : opts.tExtra); t++) {
+      for (const prep of preps) {
+        const d = t - prep.len;
+        if (d < prep.lb0 || d > prep.d2 + 8) continue;
+        pathMi.length = 0;
+        search(prep, d);
+      }
+      if (out.length) bestTotal = Math.min(bestTotal, ...out.map((o) => o.total));
+      if (out.length >= headCap || nodes > nodeCap) break;
+      if (out.length && t >= bestTotal + (opts.slackKeep === undefined ? 1 : opts.slackKeep)) break;
+    }
+    out.sort((a, b) => (a.total + a.lb) - (b.total + b.lb));
+    return out.slice(0, headCap);
+  }
+
+  // IDA* over (rel, axis masks, parity bit); h = max(edge table, cp table) is
+  // admissible and h == 0 ⇔ fully reduced with zero parity debt.
+  function deepSolve3(s8, opts = {}) {
+    const { sigmaInv, tau, maskT, sliceDouble } = deepStructure();
+    const nodeCap = opts.nodeCap || 30e6;
+    const feas = deepFeasible8(s8);
+    if (!feas) return { error: 'infeasible' };
+    const nM = G3.length;
+    const mSi = [], mTau = [], mMaskT = [], mFlip = new Uint8Array(nM);
+    const mAxis = new Uint8Array(nM), mLayer = new Uint8Array(nM), mTok = [];
+    for (let k = 0; k < nM; k++) {
+      const mi = G3[k];
+      mSi.push(sigmaInv[mi]); mTau.push(tau[mi]); mMaskT.push(maskT[mi]);
+      mFlip[k] = sliceDouble[mi];
+      mAxis[k] = AXIS_OF_FACE[MOVES36[mi][0]];
+      mLayer[k] = LAYER_OF_FACE[MOVES36[mi][0]];
+      mTok.push(MOVES36[mi]);
+    }
+    const MAXD = 24;
+    const relStack = Array.from({ length: MAXD + 2 }, () => new Uint8Array(12));
+    relStack[0].set(feas.rel);
+    const path = new Int8Array(MAXD + 1);
+    const hOf = (rel, a, b, c, bit) => {
+      const he = edgeLookup(rankPerm12(rel) >>> 1);
+      const hc = cpDist[cpIndexOf(a, b, c, bit)];
+      return he > hc ? he : hc;
+    };
+    const h0 = hOf(relStack[0], feas.masks[0], feas.masks[1], feas.masks[2], feas.bit);
+    if (h0 === 0) return { solutions: [[]], nodes: 0 };
+    // collect up to opts.solutions distinct optimal-length solutions: their
+    // end states differ (dedge permutation is free), which feeds the 3x3
+    // finish a diversity lottery at almost no extra search cost
+    const wantSols = opts.solutions || 1;
+    const extraNodes = opts.extraNodes || 2e6; // budget for solutions beyond the first
+    const solutions = [];
+    let nodes = 0, aborted = false, nodesAtFirst = -1;
+    const dfs = (g, a, b, c, bit, bound, prevAxis, prevLayer) => {
+      const rel = relStack[g], nrel = relStack[g + 1];
+      for (let k = 0; k < nM; k++) {
+        const ax = mAxis[k], ly = mLayer[k];
+        if (ax === prevAxis && ly <= prevLayer) continue; // canonical same-axis order
+        if (++nodes > nodeCap) { aborted = true; return true; }
+        if (nodesAtFirst >= 0 && nodes > nodesAtFirst + extraNodes) return true;
+        const si = mSi[k], t = mTau[k];
+        for (let x = 0; x < 12; x++) nrel[x] = t[rel[si[x]]];
+        const T = mMaskT[k];
+        const na = T[0][a], nb = T[1][b], nc = T[2][c], nbit = bit ^ mFlip[k];
+        const h = hOf(nrel, na, nb, nc, nbit);
+        if (h === 0) {
+          path[g] = k;
+          const moves = [];
+          for (let i = 0; i <= g; i++) moves.push(mTok[path[i]]);
+          solutions.push(moves);
+          if (nodesAtFirst < 0) nodesAtFirst = nodes;
+          if (solutions.length >= wantSols) return true;
+          continue;
+        }
+        if (g + 1 + h <= bound) {
+          path[g] = k;
+          if (dfs(g + 1, na, nb, nc, nbit, bound, ax, ly)) return true;
+        }
+      }
+      return false;
+    };
+    for (let bound = h0; bound <= (opts.maxDepth || 20); bound++) {
+      dfs(0, feas.masks[0], feas.masks[1], feas.masks[2], feas.bit, bound, -1, 9);
+      if (solutions.length) return { solutions, nodes };
+      if (aborted) return { error: 'nodes', nodes };
+    }
+    return { error: 'maxDepth', nodes };
+  }
+
+  // proper whole-cube rotations of a scheme: which color pair plays U/D
+  // during reduction (the 3x3 finish reads the reduced cube's own centers,
+  // so any rotation yields a valid solve)
+  const ROT_FACES = [
+    null,
+    { U: 'F', F: 'D', D: 'B', B: 'U', L: 'L', R: 'R' },   // x
+    { U: 'L', L: 'D', D: 'R', R: 'U', F: 'F', B: 'B' },   // z
+  ];
+  function rotateScheme(scheme, r) {
+    if (!r) return scheme;
+    const map = ROT_FACES[r];
+    const out = {};
+    for (const f of C4.FACES) out[f] = scheme[map[f]];
+    return out;
+  }
+
+  // full deep reduction: heads -> bridge sweep -> exact phase 3.
+  // Returns up to opts.results complete parity-free reductions, shortest
+  // first, or null when no head can be bridged (caller falls back to beams).
+  function deepReduce(state, scheme, opts = {}) {
+    deepInit(opts.progress);
+    // two head pipelines feed one candidate pool: the joint phase-2 +
+    // feasibility search (shortest when it lands within its node budget) and
+    // the classic heads + bridge sweep (cheap, and rescues the scrambles the
+    // joint search prices too high)
+    const cands = deepHeads(state, scheme, opts).map((h) => ({ head: h.moves, br: [], s8: h.s8, total: h.total, lb: h.lb }));
+    const seenCand = new Set(cands.map((c) => c.s8.join(',')));
+    {
+      const heads = phaseHeads(state, scheme, {
+        p1cap: opts.p1cap || 36, p1slack: opts.p1slack === undefined ? 1 : opts.p1slack,
+        p2cap: opts.p2cap || 4, headCap: opts.headCap || 12,
+      });
+      const pres = heads.map((h) => {
+        const s8 = encode96(h.state, scheme);
+        const w0 = new Uint8Array(NW);
+        for (let p = 0; p < NW; p++) w0[p] = WING_ID8[p][s8[WING_STK8[p][0]] * 6 + s8[WING_STK8[p][1]]];
+        return { head: h.moves, s8, w0, m0: axisMasks8(s8), cpar0: cornerParity8(s8) };
+      });
+      let bestTotal = cands.length ? Math.min(...cands.map((c) => c.total)) : Infinity;
+      let found = 0;
+      for (let d = 0; d <= (opts.maxBridge || 5); d++) {
+        for (const c of pres) {
+          if (c.head.length + d >= bestTotal + (opts.slackKeep === undefined ? 1 : opts.slackKeep)) continue;
+          const br = bridgeAtDepth(c, d);
+          if (!br) continue;
+          let s8 = c.s8;
+          for (const m of br) s8 = apply8(s8, m);
+          const key = s8.join(',');
+          if (seenCand.has(key)) continue;
+          seenCand.add(key);
+          const feas = deepFeasible8(s8);
+          if (!feas) continue;
+          const lb = Math.max(edgeLookup(rankPerm12(feas.rel) >>> 1),
+            cpDist[cpIndexOf(feas.masks[0], feas.masks[1], feas.masks[2], feas.bit)]);
+          const total = c.head.length + br.length;
+          cands.push({ head: c.head, br, s8, total, lb });
+          found++;
+          if (total < bestTotal) bestTotal = total;
+        }
+        if (found >= (opts.bridgedCap || 6)) break;
+      }
+      if (!cands.length) return null;
+      cands.sort((a, b) => (a.total + a.lb) - (b.total + b.lb));
+    }
+    const out = [];
+    const seenRed = new Set();
+    const t0 = Date.now();
+    const softMs = opts.softMs || 6000;
+    const tried = Math.min(cands.length, opts.tries || 3);
+    for (let i = 0; i < tried; i++) {
+      if (out.length && Date.now() - t0 > softMs) break; // enough, wrap up
+      const cand = cands[i];
+      const r = deepSolve3(cand.s8, { nodeCap: opts.nodeCap || 30e6, solutions: opts.solutions || 3 });
+      if (r.error) continue;
+      for (const sol of r.solutions) {
+        const moves = C4.cleanAlg4(cand.head.concat(cand.br, sol));
+        const key = moves.join(' ');
+        if (!seenRed.has(key)) { seenRed.add(key); out.push(moves); }
+      }
+    }
+    if (!out.length) return null;
+    out.sort((a, b) => a.length - b.length);
+    return out.slice(0, opts.results || 3);
+  }
+
   return {
     MOVES36, centerPerm, wingPerm, SET36, SET28, SET24, OUTER18,
     buildAll, exportTables, importTables, TABLES_VERSION, PORTFOLIO, PORTFOLIO_DEEP,
     phasedReduce, walkPhase, phase3Beam8, score8, centersExact, encode96, idaStar8,
     classMask24, lrMask16, axisMasks, wingParityOf, phase1Options, phase2Options, phaseHeads,
     endgameBeam8, pllParity8, reductionMeta,
+    deepInit, deepReduce, deepSolve3, deepFeasible8, deepHeads, bridgeAtDepth, rotateScheme,
+    cornerParity8, relOf8, rankPerm12, unrankPerm12, permParity, axisMasks8,
+    get deepTablesBuilt() { return deepTablesBuilt; },
     apply8, hash8, centersExact8, allPaired8, wingParity8,
     get built() { return built; },
     get dist1() { return dist1; }, get dist2() { return dist2; },

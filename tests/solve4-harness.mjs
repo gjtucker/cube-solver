@@ -46,9 +46,10 @@ const asJson = args.includes('--json');
 const strict = args.includes('--strict');
 // default = the product pipeline: shipped tables + the portfolio spread over
 // parallel workers. --sequential measures the no-worker fallback instead;
-// --hard measures the "Search harder" mode (deep portfolio + rich 3x3
-// finishes, targets ≤58 moves / ≤75s instead of ≤70 / ≤5s; measured 54.6
-// on seed 1 and 58.0 on the harder seed 7).
+// --hard measures the "Search harder" mode (exact-phase-3 deep reductions
+// across three color-axis rotations + rich 3x3 finishes; targets ≤48 moves /
+// ≤30s instead of ≤70 / ≤5s; measured 44.9 on seeds 1 and 7 — the old beam
+// portfolio measured 53.9 / 58.0).
 const sequential = args.includes('--sequential');
 const hard = args.includes('--hard');
 
@@ -68,6 +69,11 @@ const WORKER_SRC = `
   parentPort.on('message', (m) => {
     if (m.t === 'finish') {
       parentPort.postMessage({ res: C4.solve4(m.state, 'fast', { reduction: m.red, budget3: m.budget3 }) });
+    } else if (m.t === 'deep') {
+      const probe = new C4.Solver4(m.state);
+      probe.deriveScheme();
+      const scheme = TPR4.rotateScheme(probe.scheme, (m.cfg && m.cfg.rotate) || 0);
+      parentPort.postMessage({ reds: TPR4.deepReduce(m.state, scheme, m.cfg || {}) });
     } else {
       const probe = new C4.Solver4(m.state);
       probe.deriveScheme();
@@ -117,10 +123,31 @@ async function solveParallel(s) {
   }
   return C4.solve4(s, 'fast', best ? { reduction: best } : undefined);
 }
-// "Search harder": deep portfolio queued over the pool, top distinct
-// reductions (ranked by true cost: length + owed parity fixes) each finished
-// with a generous 3x3 budget, shortest total wins
+// "Search harder": exact-phase-3 deep reductions across the three color-axis
+// rotations, then the top distinct reductions each finished with a generous
+// 3x3 budget; shortest total wins. Beam portfolio remains the fallback.
 async function solveHard(s) {
+  const deepRes = await mapPool([0, 1, 2].map((rotate) =>
+    ({ t: 'deep', state: s, cfg: { rotate, tries: 3, solutions: 4, results: 4 } })));
+  const cands = [];
+  for (const r of deepRes) if (r.reds) for (const red of r.reds) cands.push(red);
+  if (!cands.length) return solveHardBeams(s);
+  cands.sort((a, b) => a.length - b.length);
+  const picks = [];
+  for (const red of cands) {
+    if (!picks.some((p) => p.join(' ') === red.join(' '))) picks.push(red);
+    if (picks.length === 6) break;
+  }
+  const budget3 = { timeLimit: 5000, target: 17, minSearch: 1500 };
+  const fins = await mapPool(picks.map((red) => ({ t: 'finish', state: s, red, budget3 })));
+  let best = null;
+  for (const f of fins) {
+    if (f.res && !f.res.error && f.res.moves && (!best || f.res.moves.length < best.moves.length)) best = f.res;
+  }
+  return best || C4.solve4(s, 'fast');
+}
+// previous deep mode: beam-search portfolio (kept as the fallback path)
+async function solveHardBeams(s) {
   const reds = await mapPool(TPR4.PORTFOLIO_DEEP.map((cfg) => ({ state: s, cfg })));
   const probe = new C4.Solver4(s);
   probe.deriveScheme();
@@ -179,7 +206,7 @@ const summary = {
   phasedUsed: reds.length,   // scrambles where the phased reducer produced the solution
   pass: null,
 };
-const targets = hard ? { moves: 58, ms: 75000 } : { moves: 70, ms: 5000 };
+const targets = hard ? { moves: 48, ms: 30000 } : { moves: 70, ms: 5000 };
 summary.mode = hard ? 'hard' : sequential ? 'sequential' : 'parallel';
 summary.pass = summary.totalAvg <= targets.moves && summary.msAvg <= targets.ms;
 

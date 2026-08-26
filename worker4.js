@@ -21,6 +21,15 @@ onmessage = (e) => {
       probe.deriveScheme();
       const red = TPR4.phasedReduce(m.state, probe.scheme, m.cfg);
       postMessage({ id: m.id, red });
+    } else if (m.t === 'deep') {
+      // exact-phase-3 deep reduction; builds this worker's big pruning tables
+      // on first use (~2-4s) and keeps them for the session. cfg.rotate picks
+      // which color axis plays U/D during reduction (0..2).
+      const probe = new C4.Solver4(m.state);
+      probe.deriveScheme();
+      const scheme = TPR4.rotateScheme(probe.scheme, (m.cfg && m.cfg.rotate) || 0);
+      const reds = TPR4.deepReduce(m.state, scheme, m.cfg || {});
+      postMessage({ id: m.id, reds });
     } else if (m.t === 'finish') {
       postMessage({ id: m.id, res: C4.solve4(m.state, 'fast', { reduction: m.red, budget3: m.budget3 }) });
     }

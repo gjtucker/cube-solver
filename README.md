@@ -10,7 +10,7 @@ Scan your cube with the camera and follow a step-by-step 3D solution, right in t
 
 - **Camera scanning** — point your camera at each face and the scanner locks on automatically: position, size and tilt. Works with stickered cubes *and* gapless stickerless cubes (it reads the corner notches where tiles meet, since those cubes have no seams). Auto-captures only when it's genuinely sure; manual capture and undo are always available.
 - **Four puzzles** — 3×3, 4×4, 2×2 and Mirror 2×2.
-- **Two solving styles** — *Step-by-step* teaches the classic layer-by-layer method in friendly stages, each with a "Why this works" explainer of the underlying idea (commutators, twist parity, 4×4 parities); *Fewest moves* finds short solutions (two-phase for 3×3, phased reduction for 4×4 with a "Search harder" deep mode that averages ~55 moves).
+- **Two solving styles** — *Step-by-step* teaches the classic layer-by-layer method in friendly stages, each with a "Why this works" explainer of the underlying idea (commutators, twist parity, 4×4 parities); *Fewest moves* finds short solutions (two-phase for 3×3, phased reduction for 4×4 with a "Search harder" deep mode that averages ~45 moves via exact IDA* over TPR-style pruning tables).
 - **Fast 4×4 solving in the browser** — 228 KB of compressed lookup tables load in ~50 ms and the search runs on parallel Web Workers, so a fewest-moves 4×4 solve takes ~4 seconds without freezing the page.
 - **3D playback** — animated cube with play/pause, stepping, speed control, and per-stage move lists. Your cube and playback position survive refreshes.
 - **2D net view** — a flat unfolded cross as an alternative to the 3D cube while painting; some find it much easier to copy a real cube face-by-face.
@@ -37,7 +37,7 @@ Everything is plain scripts — no bundler, no dependencies. The interesting par
 |---|---|
 | `scan.js` | Camera scanner: blob segmentation → lattice fitting → physical-evidence gates (sticker seams / corner notches) → temporal tracker |
 | `cube.js` | 3×3/2×2 engine + layer-by-layer and two-phase solvers |
-| `cube4.js`, `tpr4.js`, `worker4.js` | 4×4 engine and phased-reduction solver with a worker-pool portfolio search |
+| `cube4.js`, `tpr4.js`, `worker4.js` | 4×4 engine and phased-reduction solver: beam-portfolio fast path plus a deep engine (exact phase 3 by IDA* over an edge-pairing permutation table, parity solved structurally) racing three color-axis rotations across workers |
 | `tables/` | Pre-built solver tables (nibble-packed, gzipped); regenerate with `tools/gen-tables.mjs` |
 | `app.js` | UI: painting, 3D rendering, playback, persistence, scanner overlay |
 
