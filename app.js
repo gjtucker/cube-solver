@@ -1602,7 +1602,7 @@
     const small = SCAN.downsample2(fr.px);
     const t = scan.track;
     const prefer = t ? { x: t.cx / 2, y: t.cy / 2 } : { x: small.width / 2, y: small.height / 2 };
-    const det = SCAN.detectFace(small, n, { prefer });
+    const det = SCAN.detectFace(small, n, { prefer, limits: SCAN.liveLimits(small.width, small.height) });
     scan.track = scan.tracker.update(det && {
       cx: det.cx * 2, cy: det.cy * 2, size: det.size * 2, angle: det.angle,
       count: det.count, total: det.total, single: det.single,

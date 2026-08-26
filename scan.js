@@ -401,6 +401,21 @@ const SCAN = (() => {
 
     if (opts.debug) opts.debug.tBlobs = performance.now() - T0;
     const pref = opts.prefer || { x: W / 2, y: H / 2 };
+    // hard acquisition limits (opts.limits): in live scanning the cube is
+    // roughly centred on the guide square, roughly upright, and reasonably
+    // big — a candidate far away, tiny, or heavily tilted is background, and
+    // refusing it outright beats letting a lattice-like wall win a fit.
+    // {maxDist} is measured from `prefer`, which is the current track while
+    // locked, so a cube may drift once acquired without losing the lock.
+    const lim = opts.limits || null;
+    const okLimits = (cx, cy, size, angle) => {
+      if (!lim) return true;
+      if (lim.maxDist && Math.hypot(cx - pref.x, cy - pref.y) > lim.maxDist) return false;
+      if (lim.minSize && size < lim.minSize) return false;
+      if (lim.maxSize && size > lim.maxSize) return false;
+      if (lim.maxTilt !== undefined && Math.abs(angle || 0) > lim.maxTilt) return false;
+      return true;
+    };
     const solid = blobs.filter((b) => b.compact > 0.72 && b.compact < 1.3 && b.fill > 0.4);
     const singles = solid.filter((b) => b.elong <= 1.45);
     // cube-coloured blobs bigger than one sticker may be several merged cells
@@ -702,6 +717,7 @@ const SCAN = (() => {
       for (const fit of fits) {
         if (fit.count < minCount) continue;
         if (clean < 2 && fit.count < 4) continue;
+        if (!okLimits(fit.cx, fit.cy, fit.size, fit.angle)) continue;
         const st = faceStats(fit);
         // physical lattice evidence: sticker seams in one consistent plastic
         // colour (stickered cubes), OR corner notches at the tile junctions
@@ -812,6 +828,7 @@ const SCAN = (() => {
       const size = (w + h) / 2;
       const cu = (u0 + u1) / 2, cv = (v0 + v1) / 2;
       const ucx = ca * cu - sa * cv, ucy = sa * cu + ca * cv;
+      if (!okLimits(ucx, ucy, size, ang)) continue;
       const fit = { cx: ucx, cy: ucy, x: ucx - size / 2, y: ucy - size / 2, size, angle: ang, count: 0, total: n * n };
       const st = faceStats(fit);
       if (unionLog) unionLog[unionLog.length - 1].st = st;
@@ -867,6 +884,7 @@ const SCAN = (() => {
     const c = Math.cos(bb.a), s = Math.sin(bb.a);
     const cx = c * bb.u - s * bb.v, cy = s * bb.u + c * bb.v;
     const size = (bb.w + bb.h) / 2;
+    if (!okLimits(cx, cy, size, bb.a)) return null;
     // even a plain (solved) face shows its lattice: gap lines on stickered
     // cubes, corner notches on gapless ones. A featureless cube-coloured
     // rectangle (a box, a book) shows neither — no lock.
@@ -1222,9 +1240,23 @@ const SCAN = (() => {
     return twist % 3 === 0;
   }
 
+  // the live scanner's acquisition allowance, relative to the detector
+  // frame's smaller dimension: the cube must sit near the guide square (or
+  // the current track), be at least ~1/5 of the frame tall, and not be
+  // tilted past ~25° — anything else is background, not the cube.
+  function liveLimits(w, h) {
+    const md = Math.min(w, h);
+    return {
+      maxDist: md * 0.42,
+      minSize: md * 0.2,
+      maxSize: md * 1.15,
+      maxTilt: (25 * Math.PI) / 180,
+    };
+  }
+
   return {
     rgbToHsv, featOf, dist2, hueClass, normalizeCapture, normalizeAll, sampleGrid, downsample2, detectFace,
-    createTracker, wrapAngle,
+    createTracker, wrapAngle, liveLimits,
     PROTO_FACES, faceletIndex, gridN, stepInfo, assignColors, applyToPaint,
     rotateGrid, arrangeLetters, repairOrder, cornersConsistent,
   };
