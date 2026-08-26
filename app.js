@@ -253,6 +253,11 @@
   function computeS() {
     const w = viewport.clientWidth, h = viewport.clientHeight;
     S = Math.floor(Math.min(w, h) / 5.4);
+    // building while the viewport is hidden (net view showing during a mode
+    // switch) measures a zero-size box and produces a microscopic cube; fall
+    // back to a sane size — the resize observer rebuilds exactly once the
+    // viewport is actually visible
+    if (S < 10) S = 60;
   }
 
   function clearCube() {
@@ -261,9 +266,11 @@
     stickerEls = {};
   }
 
+  let builtViewportW = -1;   // viewport width the cube was last sized against
   function buildCube() {
     clearCube();
     computeS();
+    builtViewportW = viewport.clientWidth;
     // Uniform cubes hide their interior faces at rest (they're occluded
     // anyway): iPad Safari's 3D compositor mis-sorts large plane counts,
     // drawing dark interior wedges over the stickers. The faces reappear
@@ -454,6 +461,16 @@
   // 3D/net views — track it rather than trusting one measurement
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(updateStickyOffsets).observe(document.querySelector('.stage3d'));
+    // a cube built while the viewport was hidden (net view during a mode
+    // switch) is sized against a zero box; rebuild as soon as the viewport
+    // is visible at a real size that differs from what the cube was built at
+    new ResizeObserver(() => {
+      const w = viewport.clientWidth;
+      if (w > 0 && w !== builtViewportW && !animating) {
+        buildCube();
+        render(false);
+      }
+    }).observe(viewport);
   }
   view3dBtn.addEventListener('click', () => setView('3d'));
   viewNetBtn.addEventListener('click', () => setView('net'));
@@ -1585,7 +1602,7 @@
     const small = SCAN.downsample2(fr.px);
     const t = scan.track;
     const prefer = t ? { x: t.cx / 2, y: t.cy / 2 } : { x: small.width / 2, y: small.height / 2 };
-    const det = SCAN.detectFace(small, n, { prefer });
+    const det = SCAN.detectFace(small, n, { prefer, limits: SCAN.liveLimits(small.width, small.height) });
     scan.track = scan.tracker.update(det && {
       cx: det.cx * 2, cy: det.cy * 2, size: det.size * 2, angle: det.angle,
       count: det.count, total: det.total, single: det.single,

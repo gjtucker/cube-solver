@@ -200,8 +200,12 @@ function makeScenarios(seed) {
   const rand = rng(seed);
   const out = [];
   const minDim = Math.min(W, H);
-  const scales = [0.12, 0.18, 0.25, 0.35, 0.5, 0.7];
-  const angles = [0, 8, 15, 22, 30];
+  // the live scanner enforces an acquisition allowance (SCAN.liveLimits):
+  // near the guide square, at least ~1/5 of the frame, tilted < 25°. The
+  // should-lock scenarios stay inside it; a separate out-of-allowance set
+  // below verifies those are refused rather than snapped to.
+  const scales = [0.25, 0.32, 0.42, 0.55, 0.7];
+  const angles = [0, 6, 12, 18, 23];
   const backgrounds = ['gray', 'dark', 'wood', 'cluttered', 'mosaic', 'tilewall'];
   const clutterScene = () => {
     const rects = [];
@@ -221,12 +225,14 @@ function makeScenarios(seed) {
           for (let variant = 0; variant < 3; variant++) {
             const size = scale * minDim;
             const solved = variant === 2 && rand() < 0.5;
-            // keep the whole rotated face inside the central ~70% of the frame
+            // inside the acquisition allowance: within ~0.3·minDim of the
+            // guide-square centre (liveLimits allows 0.42) and fully in frame
             const reach = (size * Math.SQRT2) / 2;
-            const mx = Math.max(1, W * 0.35 - reach), my = Math.max(1, H * 0.35 - reach);
+            const maxOff = Math.max(1, Math.min(minDim * 0.3, W * 0.45 - reach, H * 0.45 - reach));
             const glareOn = variant >= 1 && rand() < 0.5;
-            const cx = W / 2 + (rand() * 2 - 1) * mx;
-            const cy = H / 2 + (rand() * 2 - 1) * my;
+            const offR = rand() * maxOff, offT = rand() * Math.PI * 2;
+            const cx = W / 2 + Math.cos(offT) * offR;
+            const cy = H / 2 + Math.sin(offT) * offR;
             out.push({
               n, scale, angleDeg, background, solved, hasCube: true,
               clutterRects: background === 'cluttered' ? clutterScene() : null,
@@ -263,6 +269,34 @@ function makeScenarios(seed) {
       });
     }
   }
+  // out-of-allowance: perfectly real cubes that violate the acquisition
+  // allowance — tiny in frame, far off-centre, or heavily tilted. The
+  // scanner must refuse these (the UI asks the user to centre/straighten)
+  // rather than snap a box onto them.
+  for (const kind of ['small', 'far', 'tilted']) {
+    for (const background of ['gray', 'wood', 'cluttered']) {
+      for (let i = 0; i < 6; i++) {
+        const scale = kind === 'small' ? 0.13 : 0.35;
+        const size = scale * minDim;
+        const angleDeg = kind === 'tilted' ? 33 + rand() * 8 : rand() * 12;
+        const cx = kind === 'far'
+          ? W / 2 + (rand() < 0.5 ? -1 : 1) * minDim * (0.52 + rand() * 0.1)
+          : W / 2 + (rand() - 0.5) * 40;
+        const cy = H / 2 + (rand() - 0.5) * 30;
+        out.push({
+          n: 3, scale, angleDeg, background, solved: false, hasCube: true, oob: kind,
+          clutterRects: background === 'cluttered' ? clutterScene() : null,
+          style: rand() < 0.5 ? 'gapless' : 'stickered',
+          cx, cy, size,
+          angle: ((angleDeg * Math.PI) / 180) * (rand() < 0.5 ? -1 : 1),
+          face: randomFace(3, rand, false),
+          stickerFrac: 0.84, plastic: [16, 16, 16],
+          light: 0.7 + rand() * 0.4, gradient: (rand() - 0.5) * 0.3, glare: null,
+          noise: 2 + rand() * 8, rand,
+        });
+      }
+    }
+  }
   return out;
 }
 
@@ -294,7 +328,7 @@ const framesArg = args.indexOf('--frames');
 const FRAMES = framesArg >= 0 ? +args[framesArg + 1] : 8;
 
 const scenarios = makeScenarios(seed);
-const cubeScen = scenarios.filter((s) => s.hasCube);
+const cubeScen = scenarios.filter((s) => s.hasCube && !s.oob);
 const emptyScen = scenarios.filter((s) => !s.hasCube);
 
 const results = [];
@@ -305,7 +339,7 @@ for (const sc of scenarios) {
   for (let f = 0; f < FRAMES; f++) {
     const frame = renderFrame(sc);
     const prefer = track ? { x: track.cx, y: track.cy } : { x: W / 2, y: H / 2 };
-    const det = SCAN.detectFace(frame, sc.n, { prefer });
+    const det = SCAN.detectFace(frame, sc.n, { prefer, limits: SCAN.liveLimits(W, H) });
     track = tracker.update(det, f * 66);
   }
   results.push({ sc, det: track, s: sc.hasCube ? score(sc, track) : null });
@@ -313,7 +347,8 @@ for (const sc of scenarios) {
 const elapsed = Date.now() - t0;
 
 const ADVERSARIAL = new Set(['mosaic', 'tilewall']);
-const cubeRes = results.filter((r) => r.sc.hasCube);
+const cubeRes = results.filter((r) => r.sc.hasCube && !r.sc.oob);
+const oobRes = results.filter((r) => r.sc.oob);
 const realRes = cubeRes.filter((r) => !ADVERSARIAL.has(r.sc.background));
 const mosaicRes = cubeRes.filter((r) => ADVERSARIAL.has(r.sc.background));
 const emptyRes = results.filter((r) => !r.sc.hasCube);
@@ -347,6 +382,7 @@ const summary = {
   badFitRateAdv: badFitsAdv.length / mosaicRes.length,
   falseLockRate: falseLocks.length / emptyReal.length,
   mosaicFalseLockRate: mosaicFalseLocks.length / emptyMosaic.length,
+  oobLockRate: oobRes.filter((r) => r.det).length / oobRes.length,
   medianCenterErr: hits.map((r) => r.s.centerErr).sort((a, b) => a - b)[hits.length >> 1] ?? null,
   medianAngleErr: hits.map((r) => r.s.angleErr).sort((a, b) => a - b)[hits.length >> 1] ?? null,
   frames_per_scenario: FRAMES,
@@ -356,7 +392,7 @@ const summary = {
 // The adversarial cap is looser: on a wall of cube-like tiles a wrong box is
 // recoverable (tracker confirm, capture gates and final solve validation all
 // still stand behind it), while on realistic scenes it stays hard-capped.
-summary.pass = summary.lockRate >= 0.9 && summary.badFitRate <= 0.02 && summary.badFitRateAdv <= 0.1 && summary.falseLockRate <= 0.02;
+summary.pass = summary.lockRate >= 0.9 && summary.badFitRate <= 0.02 && summary.badFitRateAdv <= 0.1 && summary.falseLockRate <= 0.02 && summary.oobLockRate <= 0.05;
 
 if (asJson) {
   console.log(JSON.stringify(summary, null, 2));
@@ -370,6 +406,7 @@ if (asJson) {
   const flDetail = flBg.size ? `  [${[...flBg.entries()].sort().map(([k, v]) => `${k}: ${v}`).join('  ')}]` : '';
   console.log(`FALSE LOCKS: ${pct(summary.falseLockRate)} realistic (${falseLocks.length}/${emptyReal.length}, target ≤ 2%)${flDetail}`
     + ` · ${pct(summary.mosaicFalseLockRate)} on adversarial mosaic (informational)`);
+  console.log(`OUT-OF-ALLOWANCE: ${pct(summary.oobLockRate)} locked (${oobRes.filter((r) => r.det).length}/${oobRes.length} tiny/far/tilted cubes, target ≤ 5%)`);
   if (summary.medianCenterErr !== null) {
     console.log(`median centre error ${pct(summary.medianCenterErr)} of size · median angle error ${summary.medianAngleErr.toFixed(1)}°`);
   }
