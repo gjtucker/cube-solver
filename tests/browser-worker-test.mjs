@@ -31,7 +31,15 @@ const server = createServer((req, res) => {
 });
 await new Promise((ok) => server.listen(8765, ok));
 
-const { chromium } = await import('playwright');
+let chromium;
+try {
+  const { createRequire } = await import('node:module');
+  ({ chromium } = createRequire(join(ROOT, 'tests/'))('playwright'));
+} catch (_) {
+  console.log('SKIPPED: playwright not installed — run `npm install playwright --no-save` first');
+  server.close();
+  process.exit(0);
+}
 const browser = await chromium.launch(
   process.env.CHROMIUM_PATH || existsSync('/opt/pw-browsers/chromium')
     ? { executablePath: process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium' }
