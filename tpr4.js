@@ -1,19 +1,31 @@
 (function(){
-// Phased-reduction solver for the 4x4 (original design, TPR-inspired in
-// spirit only): a chain of nested move-set restrictions so later phases
-// structurally cannot undo earlier ones.
+// Phased-reduction solver for the 4x4: a chain of nested move-set
+// restrictions (Thistlethwaite's idea) so later phases structurally cannot
+// undo earlier ones.
 //
 //   Phase 1 (all 36 moves):        U/D-axis center pieces onto the U∪D faces.
 //                                  Exact distance table over C(24,8)=735,471.
 //   Phase 2 (28-move set):         L/R-axis centers onto L∪R (⇒ F/B done too).
 //                                  Exact table over C(16,8)=12,870.
 //   Phase 3 (24-move set: outer +  Finish: sort centers exactly AND pair all
-//            double slices only):  edges, via guided search scored by exact
-//                                  sub-tables (center-sort 70^3, two-pair joint).
+//            double slices only):  edges. Two engines: the original beam
+//                                  search scored by exact sub-tables (fast to
+//                                  build, ~8-10 moves off optimal), and the
+//                                  exact IDA* "deep engine" further down.
+//
+// ATTRIBUTION. Phases 1-2 and the beam phase 3 are this project's own design.
+// The deep engine follows the algorithm of Chen Shuang's TPR-4x4x4-Solver
+// (https://github.com/cs0x7f/TPR-4x4x4-Solver), itself built on Charles
+// Tsai's 8-step method. TPR is GPL-licensed Java; none of its source is used
+// here. This is an independent JavaScript implementation written from a prose
+// description of the algorithm, and it diverges from TPR in table encoding,
+// phase-2 goal, 3x3 finisher and orientation handling — see the README's
+// "On the 4x4 deep engine and TPR" for the specifics.
 //
 // Tables ship pre-built (tables/tpr4-v1.bin.gz, ~228 KB gzipped; regenerate
 // with tools/gen-tables.mjs) and are fetched at page load; generating them
 // on-device (~10 s) remains the fallback when the download is unavailable.
+// The deep engine's larger tables are always built on-device (~3 s).
 
 const C4t = typeof module !== 'undefined' ? require('./cube4.js') : globalThis.Cube4;
 
@@ -1125,8 +1137,8 @@ const TPR4 = (() => {
 
   // ======================= deep engine (exact phase 3) =======================
   // Replaces beam search with IDA* over two admissible tables, following the
-  // structure of Tsai/TPR-style solvers (implemented clean-room from the
-  // published design):
+  // algorithm of Chen Shuang's TPR-4x4x4-Solver (see the attribution note at
+  // the top of this file: independent implementation, no TPR source used):
   //
   //  - G3 = SET24 minus the four R/L outer quarter turns (20 moves). Under G3
   //    the 24 wing positions split into two invariant 12-position halves, one

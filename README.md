@@ -47,8 +47,42 @@ Both core pipelines have measurement harnesses with pass/fail targets:
 node tests/scan-harness.mjs --seed 1     # scanner: lock rate / bad fits / false locks on synthetic scenes
 node tests/solve4-harness.mjs            # 4×4 solver: move count + wall time
 node tests/solve4-harness.mjs --hard     # the "Search harder" deep mode
+node tests/browser-worker-test.mjs       # the real-browser worker path (needs playwright)
 ```
 
 ## Themes
 
 CubeSnap follows your system's light/dark preference; the toggle in the header (persisted per browser) or `?theme=dark` / `?theme=light` in the URL overrides it.
+
+## Credits
+
+CubeSnap's solvers stand on decades of public cube theory. **No third-party code is copied into this repository** — each algorithm below was implemented here from its published description.
+
+- **[Herbert Kociemba](http://kociemba.org/cube.htm)** — the two-phase algorithm behind the 3×3 *Fewest moves* solver (`cube.js`), which also finishes every 4×4 solution.
+- **Morwen Thistlethwaite** — the nested-subgroup idea (solve into progressively smaller move groups so later phases cannot undo earlier ones) that the 4×4 phased reduction is built on.
+- **Richard Korf** — IDA*, the iterative-deepening A* search the 4×4 deep engine runs over its pruning tables.
+- **[Chen Shuang (cs0x7f)](https://github.com/cs0x7f/TPR-4x4x4-Solver)** — the Three-Phase-Reduction solver that generates official WCA 4×4 scrambles. CubeSnap's deep 4×4 engine follows its design; see the note below.
+- **Charles Tsai** — the 8-step 4×4 method that TPR builds on.
+- **The [speedsolving.com](https://www.speedsolving.com/) community** — the layer-by-layer method taught in *Step-by-step*, and the 4×4 OLL/PLL parity algorithms in `cube4.js`.
+
+### On the 4×4 deep engine and TPR
+
+[TPR-4x4x4-Solver](https://github.com/cs0x7f/TPR-4x4x4-Solver) is GPL-licensed Java. CubeSnap's deep engine is an independent JavaScript implementation, written from a prose description of TPR's *algorithm* — its phase structure, the relative-pairing edge coordinate, and the idea of folding parity into the pruning coordinates so parity is never repaired by a dedicated 15-move algorithm. No TPR source was copied, and the two implementations diverge substantially:
+
+| | TPR | CubeSnap |
+|---|---|---|
+| Edge pruning table | 31M entries × 2 bits, 8-fold symmetry reduction, depth 9 | 3.4M entries in an open-addressed hash keyed by an even-permutation rank, depth 8 |
+| Phase-2 goal | centers + wing parity; phase-3 feasibility filtered afterwards | centers, parity **and** phase-3 feasibility searched jointly as one exact-depth problem |
+| 3×3 finish | min2phase | CubeSnap's own two-phase solver (`cube.js`) |
+| Orientation | one symmetry frame, rotations stripped at output | three color-axis rotations raced across Web Workers |
+
+Copyright covers the expression of a program rather than the algorithm it implements, which is why this project is MIT-licensed rather than GPL. If you want the original, use TPR — it is both faster (~250 ms) and shorter (~44.4 moves) than this one.
+
+### Assets and tooling
+
+- **[Inter](https://rsms.me/inter/)** by Rasmus Andersson, under the [SIL Open Font License 1.1](https://openfontlicense.org/) — loaded from Google Fonts at runtime, not redistributed here.
+- **[Playwright](https://playwright.dev/)** (Apache-2.0) — an optional dev dependency for `tests/browser-worker-test.mjs` only; installed ad hoc (`npm install playwright --no-save`), never bundled. The app itself ships no bundled dependencies.
+
+## License
+
+[MIT](LICENSE) © CubeSnap contributors.

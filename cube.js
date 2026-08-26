@@ -1467,7 +1467,9 @@ function solveMirrorOptimal(shapes) {
 }
 
 // =====================================================================
-// Two-phase (Kociemba) 3x3 solver — short solutions (~20-26 moves).
+// Two-phase 3x3 solver — short solutions (~20-26 moves). An independent
+// implementation of Herbert Kociemba's published two-phase algorithm
+// (http://kociemba.org/cube.htm); no third-party source is used here.
 // Phase 1: orient all pieces + bring the 4 E-slice edges into the slice
 // (coordinates: corner-twist 3^7, edge-flip 2^11, slice-position C(12,4)).
 // Phase 2: solve within <U, D, R2, L2, F2, B2>
