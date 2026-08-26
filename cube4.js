@@ -156,9 +156,61 @@ const C4 = (() => {
     return out;
   }
 
+  // axis-aware simplifier: the four layer moves on one axis (e.g. U, u, d, D)
+  // touch disjoint stickers and commute, so within a maximal same-axis run the
+  // turns of each layer sum mod 4 and zeroed layers vanish. Iterates to a
+  // fixpoint because a vanished run fuses its neighbours into one longer run.
+  const LAYER_AXIS = { U: 0, D: 0, u: 0, d: 0, F: 1, B: 1, f: 1, b: 1, L: 2, R: 2, l: 2, r: 2 };
+  function cleanAlg4(moves) {
+    const turns = (m) => (m.length === 1 ? 1 : m[1] === '2' ? 2 : 3);
+    let seq = moves;
+    for (;;) {
+      const out = [];
+      let i = 0;
+      while (i < seq.length) {
+        const axis = LAYER_AXIS[seq[i][0]];
+        let j = i;
+        while (j < seq.length && LAYER_AXIS[seq[j][0]] === axis) j++;
+        const order = [], sum = {};
+        for (let k = i; k < j; k++) {
+          const L = seq[k][0];
+          if (sum[L] === undefined) { sum[L] = 0; order.push(L); }
+          sum[L] = (sum[L] + turns(seq[k])) & 3;
+        }
+        for (const L of order) {
+          const t = sum[L];
+          if (t) out.push(t === 1 ? L : t === 2 ? L + '2' : L + "'");
+        }
+        i = j;
+      }
+      if (out.length === seq.length) return out;
+      seq = out;
+    }
+  }
+
+  // cancel moves across a stage seam: same-axis runs touching the boundary
+  // merge (cancellations are attributed to the earlier stage; in the fast
+  // path this is sound because later-stage moves there are outer moves,
+  // which preserve the reduced state the boundary promises)
+  function mergeSeam(a, b) {
+    for (;;) {
+      if (!a.length || !b.length) return [a, b];
+      const axis = LAYER_AXIS[a[a.length - 1][0]];
+      let e = 0;
+      while (e < b.length && LAYER_AXIS[b[e][0]] === axis) e++;
+      if (!e) return [a, b];
+      let s = a.length;
+      while (s > 0 && LAYER_AXIS[a[s - 1][0]] === axis) s--;
+      const merged = cleanAlg4(a.slice(s).concat(b.slice(0, e)));
+      if (merged.length === (a.length - s) + e) return [a, b];
+      a = a.slice(0, s).concat(merged);
+      b = b.slice(e);
+    }
+  }
+
   return {
     FACES, STICKERS, MOVE_PERM, CORNERS, WINGS, CENTERS, DEDGES, DEDGE_KEYS,
-    applyMove, applyAlg, solvedState, isSolved, randomScramble,
+    applyMove, applyAlg, solvedState, isSolved, randomScramble, cleanAlg4, mergeSeam, LAYER_AXIS,
     centerCount, centersSolvedTo, dedgePaired, allPaired, pairedCount,
     OUTER, INNER, ALL_MOVES,
   };
@@ -693,7 +745,12 @@ const C4 = (() => {
     const red = pre && pre.length ? pre : C4.phasedReducer ? C4.phasedReducer(state, scheme) : null;
     if (!red) return null;
     const mid = C4.applyAlg(state, red);
-    const rest = finish3x3(mid, scheme, 'fast', budget3);
+    // derive the finish scheme from the reduced cube's (now uniform) centers
+    // rather than reusing the probe's: this keeps the 3x3 stage correct even
+    // when the reduction targeted a rotated scheme
+    const scheme2 = {};
+    for (const c of C4.CENTERS) scheme2[c.face] = mid[c.idx];
+    const rest = finish3x3(mid, scheme2, 'fast', budget3);
     if (!rest) return null;
     const stages = [{
       name: 'Reduce to a 3×3',
@@ -701,7 +758,7 @@ const C4 = (() => {
       start: 0, end: red.length,
     }];
     for (const st of rest.stages) stages.push({ name: st.name, desc: st.desc, start: st.start + red.length, end: st.end + red.length });
-    return { moves: red.concat(rest.moves), stages };
+    return { moves: red.concat(rest.moves), stages, phased: true };
   }
 
   function solve4(state, method, opts) {
@@ -730,13 +787,29 @@ const C4 = (() => {
         throw e;
       }
     }
-    // clean each stage separately
+    // clean each stage separately; on the phased path also cancel across
+    // stage seams (axis-aware), repeating while emptied stages open new seams
+    const segs = raw.stages.map((st) => ({
+      name: st.name, desc: st.desc,
+      seg: raw.phased ? C4.cleanAlg4(raw.moves.slice(st.start, st.end)) : C3.cleanMoves(raw.moves.slice(st.start, st.end)),
+    }));
+    if (raw.phased) {
+      for (let pass = 0; pass < 4; pass++) {
+        let changed = false;
+        const live = segs.filter((s) => s.seg.length);
+        for (let i = 0; i + 1 < live.length; i++) {
+          const before = live[i].seg.length + live[i + 1].seg.length;
+          const [a, b] = C4.mergeSeam(live[i].seg, live[i + 1].seg);
+          if (a.length + b.length < before) { live[i].seg = a; live[i + 1].seg = b; changed = true; }
+        }
+        if (!changed) break;
+      }
+    }
     const stages = [], moves = [];
-    for (const st of raw.stages) {
-      const seg = C3.cleanMoves(raw.moves.slice(st.start, st.end));
-      if (seg.length === 0 && raw.stages.length > 3) continue;
-      stages.push({ name: st.name, desc: st.desc, start: moves.length, end: moves.length + seg.length });
-      moves.push(...seg);
+    for (const st of segs) {
+      if (st.seg.length === 0 && raw.stages.length > 3) continue;
+      stages.push({ name: st.name, desc: st.desc, start: moves.length, end: moves.length + st.seg.length });
+      moves.push(...st.seg);
     }
     return { moves, stages };
   }

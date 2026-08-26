@@ -75,9 +75,23 @@
       }));
       return out;
     },
+    // true cost of a reduction = length + the parity fixes it still owes
+    // (flip ~15 moves, swap ~7); falls back to bare length when the main
+    // thread has no tables to judge parity with
+    reductionCost(state, red) {
+      try {
+        const TPR4 = window.TPR4;
+        if (!TPR4.built) return red.length;
+        const probe = new C4.Solver4(state);
+        probe.deriveScheme();
+        const meta = TPR4.reductionMeta(state, probe.scheme, red);
+        return red.length + (meta.par ? 15 : 0) + (meta.pll ? 7 : 0);
+      } catch (_) { return red.length; }
+    },
     // "Search harder": the deep portfolio queued over the pool, then the top
-    // distinct reductions each get their own generous 3×3 finish; shortest
-    // total wins. ~30-60s. Returns null if workers are unavailable.
+    // distinct reductions (ranked by true cost) each get their own generous
+    // 3×3 finish; shortest total wins. ~30-60s. Returns null if workers are
+    // unavailable.
     async solveHard(state, onProgress) {
       if (typeof Worker === 'undefined') return null;
       const TPR4 = window.TPR4;
@@ -87,12 +101,14 @@
       const reds = await this.mapPool(pool, TPR4.PORTFOLIO_DEEP,
         (cfg) => ({ t: 'reduce', state, cfg }),
         (done, total) => onProgress && onProgress(done, total + 1));
-      const good = reds.map((r) => r && r.red).filter(Boolean).sort((a, b) => a.length - b.length);
+      const good = reds.map((r) => r && r.red).filter(Boolean)
+        .map((red) => ({ red, cost: this.reductionCost(state, red) }))
+        .sort((a, b) => a.cost - b.cost);
       if (!good.length) return null;
       const picks = [];
-      for (const r of good) {
-        if (!picks.some((p) => p.join(' ') === r.join(' '))) picks.push(r);
-        if (picks.length === 3) break;
+      for (const { red } of good) {
+        if (!picks.some((p) => p.join(' ') === red.join(' '))) picks.push(red);
+        if (picks.length === 4) break;
       }
       const budget3 = { timeLimit: 4000, target: 18, minSearch: 1500 };
       const fins = await this.mapPool(pool, picks, (red) => ({ t: 'finish', state, red, budget3 }));
@@ -112,8 +128,12 @@
         const pool = this.getPool(n, tables);
         const reds = await Promise.all(TPR4.PORTFOLIO.slice(0, pool.length).map((cfg, i) =>
           this.call(pool[i], { t: 'reduce', state, cfg })));
-        let best = null;
-        for (const r of reds) if (r && r.red && (!best || r.red.length < best.length)) best = r.red;
+        let best = null, bestCost = Infinity;
+        for (const r of reds) {
+          if (!r || !r.red) continue;
+          const cost = this.reductionCost(state, r.red);
+          if (cost < bestCost) { best = r.red; bestCost = cost; }
+        }
         if (!best) return C4.solve4(state, 'fast');
         const fin = await this.call(pool[0], { t: 'finish', state, red: best });
         return fin && fin.res ? fin.res : C4.solve4(state, 'fast');

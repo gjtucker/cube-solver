@@ -106,20 +106,35 @@ async function mapPool(msgs) {
 }
 async function solveParallel(s) {
   const reds = await Promise.all(getPool().map((w, i) => callOn(w, { state: s, cfg: TPR4.PORTFOLIO[i] })));
-  let best = null;
-  for (const r of reds) if (r.red && (!best || r.red.length < best.length)) best = r.red;
+  const probe = new C4.Solver4(s);
+  probe.deriveScheme();
+  let best = null, bestCost = Infinity;
+  for (const r of reds) {
+    if (!r.red) continue;
+    const meta = TPR4.reductionMeta(s, probe.scheme, r.red);
+    const cost = r.red.length + (meta.par ? 15 : 0) + (meta.pll ? 7 : 0);
+    if (cost < bestCost) { best = r.red; bestCost = cost; }
+  }
   return C4.solve4(s, 'fast', best ? { reduction: best } : undefined);
 }
 // "Search harder": deep portfolio queued over the pool, top distinct
-// reductions each finished with a generous 3x3 budget, shortest total wins
+// reductions (ranked by true cost: length + owed parity fixes) each finished
+// with a generous 3x3 budget, shortest total wins
 async function solveHard(s) {
   const reds = await mapPool(TPR4.PORTFOLIO_DEEP.map((cfg) => ({ state: s, cfg })));
-  const good = reds.map((r) => r.red).filter(Boolean).sort((a, b) => a.length - b.length);
+  const probe = new C4.Solver4(s);
+  probe.deriveScheme();
+  const good = reds.map((r) => r.red).filter(Boolean)
+    .map((red) => {
+      const meta = TPR4.reductionMeta(s, probe.scheme, red);
+      return { red, cost: red.length + (meta.par ? 15 : 0) + (meta.pll ? 7 : 0) };
+    })
+    .sort((a, b) => a.cost - b.cost);
   if (!good.length) return C4.solve4(s, 'fast');
   const picks = [];
-  for (const r of good) {
-    if (!picks.some((p) => p.join(' ') === r.join(' '))) picks.push(r);
-    if (picks.length === 3) break;
+  for (const { red } of good) {
+    if (!picks.some((p) => p.join(' ') === red.join(' '))) picks.push(red);
+    if (picks.length === 4) break;
   }
   const budget3 = { timeLimit: 4000, target: 18, minSearch: 1500 };
   const fins = await mapPool(picks.map((red) => ({ t: 'finish', state: s, red, budget3 })));
@@ -144,17 +159,20 @@ for (let i = 0; i < N; i++) {
   }
   const red = sol.stages.find((st) => st.name.startsWith('Reduce'));
   const redLen = red ? red.end - red.start : null;
-  rows.push({ total: sol.moves.length, red: redLen, three: redLen === null ? null : sol.moves.length - redLen, ms });
+  // OBTM (outer block turn metric): outer moves count 1, single-slice moves 2
+  const obtm = sol.moves.reduce((acc, m) => acc + (m[0] === m[0].toUpperCase() ? 1 : 2), 0);
+  rows.push({ total: sol.moves.length, obtm, red: redLen, three: redLen === null ? null : sol.moves.length - redLen, ms });
 }
 
 const nums = (k) => rows.map((r) => r[k]).filter((x) => x !== null).sort((a, b) => a - b);
 const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length;
 const pct = (a, p) => a[Math.min(a.length - 1, Math.floor(a.length * p))];
 
-const totals = nums('total'), reds = nums('red'), threes = nums('three'), times = nums('ms');
+const totals = nums('total'), obtms = nums('obtm'), reds = nums('red'), threes = nums('three'), times = nums('ms');
 const summary = {
   n: N, seed, buildMs,
   totalAvg: +avg(totals).toFixed(1), totalMedian: pct(totals, 0.5), totalP90: pct(totals, 0.9), totalMax: totals[totals.length - 1],
+  obtmAvg: +avg(obtms).toFixed(1),
   reductionAvg: reds.length ? +avg(reds).toFixed(1) : null,
   threeAvg: threes.length ? +avg(threes).toFixed(1) : null,
   msAvg: Math.round(avg(times)), msMax: times[times.length - 1],
@@ -169,7 +187,7 @@ if (asJson) {
   console.log(JSON.stringify(summary, null, 2));
 } else {
   console.log(`table build: ${buildMs}ms · ${N} scrambles (seed ${seed}) · mode ${summary.mode}`);
-  console.log(`MOVES:  avg ${summary.totalAvg} (target ≤ ${targets.moves}) · median ${summary.totalMedian} · p90 ${summary.totalP90} · max ${summary.totalMax}`);
+  console.log(`MOVES:  avg ${summary.totalAvg} (target ≤ ${targets.moves}) · median ${summary.totalMedian} · p90 ${summary.totalP90} · max ${summary.totalMax} · OBTM avg ${summary.obtmAvg}`);
   console.log(`        reduction avg ${summary.reductionAvg} · 3x3 finish avg ${summary.threeAvg} · phased path used ${summary.phasedUsed}/${N}`);
   console.log(`TIME:   avg ${summary.msAvg}ms (target ≤ ${targets.ms}ms) · max ${summary.msMax}ms`);
   console.log(summary.pass ? 'PASS' : 'FAIL (baseline before shipped tables: ~87 moves / ~11500ms)');

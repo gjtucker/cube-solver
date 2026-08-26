@@ -653,23 +653,67 @@ const TPR4 = (() => {
     return null;
   }
 
-  // enumerate several optimal phase-1 walks (paths along distance-decreasing
-  // edges), so phase 2 can pick the friendliest starting point
-  function phase1Options(state, scheme, cap) {
+  // enumerate several phase-1 walks within `slack` of optimal (paths bounded
+  // by g+h <= optimal+slack), deduped by end state, so phase 2 and phase 3
+  // get a choice of starting points — slightly longer phase-1 walks often
+  // land in far friendlier phase-3 basins
+  function phase1Options(state, scheme, cap, slack) {
     const out = [];
+    const seenEnd = new Set();
+    const m0 = classMask24(state, scheme);
+    const budget = dist1[rankMask(m0, 24, 8)] + (slack || 0);
     const rec = (st, mask, moves) => {
       if (out.length >= cap) return;
       const d = dist1[rankMask(mask, 24, 8)];
-      if (d === 0) { out.push({ moves: moves.slice(), state: st }); return; }
+      if (d === 0) {
+        const key = st.join('');
+        if (!seenEnd.has(key)) { seenEnd.add(key); out.push({ moves: moves.slice(), state: st }); }
+        return;
+      }
       for (const mi of SET36) {
         if (out.length >= cap) return;
         const nm = applyMask(centerMask[mi], mask);
-        if (dist1[rankMask(nm, 24, 8)] === d - 1) {
+        const nd = dist1[rankMask(nm, 24, 8)];
+        if (moves.length + 1 + nd <= budget) {
           rec(C4.applyMove(st, MOVES36[mi]), nm, moves.concat(MOVES36[mi]));
         }
       }
     };
-    rec(state, classMask24(state, scheme), []);
+    rec(state, m0, []);
+    return out;
+  }
+
+  // enumerate optimal-within-slack phase-2 walks (parity bit included)
+  function phase2Options(state, scheme, cap, slack) {
+    const par0 = wingParityOf(state, scheme);
+    if (par0 === null) return [];
+    const m0 = lrMask16(state, scheme);
+    const d0 = dist2[rank16(m0) * 2 + par0];
+    if (d0 === undefined || d0 === 255) return [];
+    const budget = d0 + (slack || 0);
+    const out = [];
+    const seenEnd = new Set();
+    const rec = (st, mask, par, moves) => {
+      if (out.length >= cap) return;
+      const d = dist2[rank16(mask) * 2 + par];
+      if (d === 0) {
+        const key = st.join('');
+        if (!seenEnd.has(key)) { seenEnd.add(key); out.push({ moves: moves.slice(), state: st }); }
+        return;
+      }
+      for (const mi of SET28) {
+        if (out.length >= cap) return;
+        const perm = sidePerm[mi];
+        let nm = 0;
+        for (let i = 0; i < 16; i++) if (mask & (1 << i)) nm |= 1 << perm[i];
+        const np = par ^ MOVE_ODD[mi];
+        const nd = dist2[rank16(nm) * 2 + np];
+        if (nd !== 255 && moves.length + 1 + nd <= budget) {
+          rec(C4.applyMove(st, MOVES36[mi]), nm, np, moves.concat(MOVES36[mi]));
+        }
+      }
+    };
+    rec(state, m0, par0, []);
     return out;
   }
 
@@ -967,60 +1011,85 @@ const TPR4 = (() => {
   // other (beam basins vary wildly with the scoring weights — on the same
   // scramble one config may find 30 moves where another finds 70). Run
   // sequentially via {restarts: PORTFOLIO} or spread across parallel workers.
-  const mkCfg = (w1, w2) => ({
-    lite: 1, width: 470, w1, w2, pool: 8, stallLimit: 17,
+  const mkCfg = (w1, w2, headIdx) => ({
+    lite: 1, width: 470, w1, w2, pool: 8, stallLimit: 17, headIdx: headIdx || 0,
     endgameTries: 1, greedyTries: 2, endgame: { lite: 1, width: 800, rounds: 14 },
   });
-  const PORTFOLIO = [mkCfg(1.2, 0.35), mkCfg(0.9, 0.5), mkCfg(1.5, 0.25)];
+  const PORTFOLIO = [mkCfg(1.2, 0.35, 0), mkCfg(0.9, 0.5, 0), mkCfg(1.5, 0.25, 0)];
   // "Search harder" portfolio: more weight diversity, wider beams, richer
-  // closers. Roughly a minute of total search; ceiling-probed at ~52-56
-  // total moves versus ~61-68 for the fast portfolio.
-  const dCfg = (w1, w2, width) => ({
-    lite: 1, width, w1, w2, pool: 10, stallLimit: 24,
+  // closers, and each config starting phase 3 from a different phase-1/2 head.
+  const dCfg = (w1, w2, width, headIdx) => ({
+    lite: 1, width, w1, w2, pool: 10, stallLimit: 24, headIdx: headIdx || 0,
+    p1slack: 1, headCap: 10,
     endgameTries: 3, greedyTries: 3, endgame: { lite: 1, width: 2000, rounds: 18 },
   });
+  // head assignment is a pyramid: config diversity on the best head is the
+  // dominant variance-killer, so most configs stay on head 0 and the longer
+  // heads get a thinner spread as a bonus lottery ticket
   const PORTFOLIO_DEEP = [
-    dCfg(1.2, 0.35, 800), dCfg(0.9, 0.5, 800), dCfg(1.5, 0.25, 800), dCfg(1.05, 0.42, 800),
-    dCfg(1.2, 0.35, 1600), dCfg(0.9, 0.5, 1600), dCfg(1.5, 0.25, 1600), dCfg(1.35, 0.3, 1600),
+    dCfg(1.2, 0.35, 800, 0), dCfg(0.9, 0.5, 800, 0), dCfg(1.5, 0.25, 800, 1), dCfg(1.05, 0.42, 800, 1),
+    dCfg(1.2, 0.35, 1600, 0), dCfg(0.9, 0.5, 1600, 2), dCfg(1.5, 0.25, 1600, 3), dCfg(1.35, 0.3, 1600, 2),
     // extreme weightings: rarely best, but they rescue the stubborn scrambles
     // every mainstream config wanders on
-    dCfg(0.75, 0.6, 1600), dCfg(1.8, 0.15, 1600),
+    dCfg(0.75, 0.6, 1600, 0), dCfg(1.8, 0.15, 1600, 1),
   ];
+
+  // heads = phase-1 x phase-2 walk combinations, seam-cleaned, deduped by end
+  // state, sorted by length. Different heads land phase 3 in different basins,
+  // so portfolio configs each start from their own head (cfg.headIdx).
+  function phaseHeads(state, scheme, opts = {}) {
+    const p1s = phase1Options(state, scheme, opts.p1cap || 24, opts.p1slack || 0);
+    const heads = [];
+    const byEnd = new Map(); // end-state key -> index in heads (shortest kept)
+    for (const p1 of p1s) {
+      const p2s = phase2Options(p1.state, scheme, opts.p2cap || 3, opts.p2slack || 0);
+      for (const p2 of p2s) {
+        const key = p2.state.join('');
+        const moves = C4.cleanAlg4(p1.moves.concat(p2.moves));
+        const at = byEnd.get(key);
+        if (at === undefined) {
+          byEnd.set(key, heads.length);
+          heads.push({ moves, state: p2.state, len: moves.length });
+        } else if (moves.length < heads[at].len) {
+          heads[at] = { moves, state: p2.state, len: moves.length };
+        }
+      }
+    }
+    heads.sort((a, b) => a.len - b.len);
+    return heads.slice(0, opts.headCap || 8);
+  }
 
   // full phased reduction: returns move list or null.
   function phasedReduce(state, scheme, opts = {}) {
     if (!built) buildAll(opts.progress);
-    // multi-start: pick the phase-1 walk whose phase-2 continuation is cheapest
-    const p1s = phase1Options(state, scheme, opts.p1cap || 24);
-    let bestHead = null;
-    for (const p1 of p1s) {
-      const p2 = walkPhase(p1.state, scheme, 2);
-      if (!p2) continue;
-      const len = p1.moves.length + p2.moves.length;
-      if (!bestHead || len < bestHead.len) {
-        bestHead = { len, moves: p1.moves.concat(p2.moves), state: p2.state };
-      }
-    }
-    if (!bestHead) return null;
-    const head = bestHead.moves;
-    const s0 = encode96(bestHead.state, scheme);
+    const heads = phaseHeads(state, scheme, opts);
+    if (!heads.length) return null;
     // one full phase-3 + closer attempt under one search config. Beam search
     // basins vary wildly with the scoring weights, so phasedReduce can run a
-    // small portfolio of configs (opts.restarts) and keep the shortest.
+    // small portfolio of configs (opts.restarts) and keep the cheapest —
+    // cost prices the downstream parity fixes (flip ~15, swap ~7) so a
+    // slightly longer parity-free reduction wins over a shorter parity one.
     const attempt = (o) => {
+      const headPick = heads[Math.min(o.headIdx || 0, heads.length - 1)];
+      const head = headPick.moves;
+      const s0 = encode96(headPick.state, scheme);
+      let best = null; // {moves, cost}
+      const consider = (moves, endState8) => {
+        const cleaned = C4.cleanAlg4(moves);
+        const par = wingParity8(endState8);
+        const pll = pllParity8(endState8);
+        const cost = cleaned.length + (par ? 15 : 0) + (pll ? 7 : 0);
+        if (!best || cost < best.cost) best = { moves: cleaned, cost };
+      };
       // main beam (code-space) collects hand-off candidates
       const p3 = phase3Beam8(s0, o);
       if (!p3) return null;
-      if (p3.done) return head.concat(p3.moves);
-      // Closers compete: endgame beams and greedy tails from several hand-offs.
-      // Cost includes downstream parity penalties (flip fix ~15, swap fix ~7).
-      let best = null; // {moves, cost}
-      const consider = (moves, endState8) => {
-        const par = wingParity8(endState8);
-        const pll = pllParity8(endState8);
-        const cost = moves.length + (par ? 15 : 0) + (pll ? 7 : 0);
-        if (!best || cost < best.cost) best = { moves, cost };
-      };
+      if (p3.done) {
+        let es = s0;
+        for (const mv of p3.moves) es = apply8(es, mv);
+        consider(head.concat(p3.moves), es);
+        return best;
+      }
       for (const cand of p3.pool.slice(0, o.endgameTries || 2)) {
         const eg = endgameBeam8(cand.s, o.endgame || {});
         if (eg) {
@@ -1031,27 +1100,35 @@ const TPR4 = (() => {
         }
       }
       for (const cand of p3.pool.slice(0, o.greedyTries || 4)) {
-        const midState = C4.applyAlg(bestHead.state, cand.moves);
+        const midState = C4.applyAlg(headPick.state, cand.moves);
         const tail = C4.finishReduction(midState, scheme);
         if (!tail) continue;
         consider(head.concat(cand.moves, tail.moves), encode96(tail.state, scheme));
       }
-      return best ? best.moves : null;
+      return best;
     };
     const configs = opts.restarts && opts.restarts.length ? opts.restarts : [opts];
     let out = null;
     for (const o of configs) {
       const m = attempt(o);
-      if (m && (!out || m.length < out.length)) out = m;
+      if (m && (!out || m.cost < out.cost)) out = m;
     }
-    return out;
+    return out ? out.moves : null;
+  }
+
+  // parity fixes still owed by a reduction (for cost-aware candidate ranking
+  // by orchestrators: true cost ≈ length + 15*par + 7*pll)
+  function reductionMeta(state, scheme, red) {
+    const s8 = encode96(C4.applyAlg(state, red), scheme);
+    return { par: wingParity8(s8), pll: pllParity8(s8) };
   }
 
   return {
     MOVES36, centerPerm, wingPerm, SET36, SET28, SET24, OUTER18,
     buildAll, exportTables, importTables, TABLES_VERSION, PORTFOLIO, PORTFOLIO_DEEP,
     phasedReduce, walkPhase, phase3Beam8, score8, centersExact, encode96, idaStar8,
-    classMask24, lrMask16, axisMasks, wingParityOf, phase1Options, endgameBeam8, pllParity8,
+    classMask24, lrMask16, axisMasks, wingParityOf, phase1Options, phase2Options, phaseHeads,
+    endgameBeam8, pllParity8, reductionMeta,
     apply8, hash8, centersExact8, allPaired8, wingParity8,
     get built() { return built; },
     get dist1() { return dist1; }, get dist2() { return dist2; },
