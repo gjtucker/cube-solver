@@ -45,13 +45,19 @@ const SCAN = (() => {
 
   // lenient hue-prior classifier (live feedback only)
   // returns one of U(yellow) D(white) F(green) B(blue) R(orange) L(red)
+  // Bands are set for real cameras, not ideal colours: phone white balance
+  // routinely drags yellow toward lime (field-measured yellow tiles at hue
+  // 81–95 under warm indoor light), so yellow runs to 100 — true cube
+  // greens sit at 110+ even under a cast. A warm cast also lifts white's
+  // saturation, so the white cutoff is 0.34, above what warm-cast white
+  // reaches (~0.31) but below any real sticker colour.
   function hueClass(rgb) {
     const { h, s, v } = rgbToHsv(rgb[0], rgb[1], rgb[2]);
     if (v < 0.15) return null;             // too dark: probably not a sticker
-    if (s < 0.28) return 'D';              // white
+    if (s < 0.34) return 'D';              // white
     if (h < 14 || h >= 335) return 'L';    // red
     if (h < 42) return 'R';                // orange
-    if (h < 75) return 'U';                // yellow
+    if (h < 100) return 'U';               // yellow (incl. lime-shifted)
     if (h < 175) return 'F';               // green
     if (h < 275) return 'B';               // blue
     return 'L';                            // magenta-ish -> red

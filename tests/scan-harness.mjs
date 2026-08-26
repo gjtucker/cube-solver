@@ -143,6 +143,10 @@ function renderFrame(sc) {
         const q = gx * gx + gy * gy;
         if (q < 1) { const a = sc.glare.amp * (1 - q); r += a; g += a; b += a; }
       }
+      // white-balance cast: phone cameras routinely shift the whole frame
+      // (field-measured: yellow tiles at hue 81-95 under a warm-light AWB
+      // overcorrection) — the classifier has to survive it
+      if (sc.cast) { r *= sc.cast[0]; g *= sc.cast[1]; b *= sc.cast[2]; }
       // sensor noise
       const o = (y * W + x) * 4;
       d[o] = r + (sc.rand() - 0.5) * sc.noise;
@@ -195,6 +199,7 @@ function randomFace(n, rand, solved) {
   return face;
 }
 
+const CASTS = { warm: [1.18, 1.0, 0.72], cool: [0.8, 1.05, 1.25], lime: [0.82, 1.18, 0.85] };
 // ---------- scenario generation ----------
 function makeScenarios(seed) {
   const rand = rng(seed);
@@ -240,6 +245,7 @@ function makeScenarios(seed) {
               cx, cy, size,
               angle: (angleDeg * Math.PI / 180) * (rand() < 0.5 ? -1 : 1),
               face: randomFace(n, rand, solved),
+              cast: variant >= 1 && rand() < 0.5 ? Object.values(CASTS)[Math.floor(rand() * 3)] : null,
               stickerFrac: 0.80 + rand() * 0.08,
               plastic: rand() < 0.85 ? [16, 16, 16] : [235, 235, 235], // black or white plastic
               light: 0.55 + rand() * 0.6,
@@ -373,6 +379,17 @@ function bucket(keyFn) {
   return [...m.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0]), undefined, { numeric: true }));
 }
 
+// colour-label accuracy on the locks the user would act on: sample the
+// locked grid and compare hueClass against the ground-truth face
+let labelOk = 0, labelAll = 0;
+for (const r of results) {
+  if (!r.sc.hasCube || r.sc.oob || !r.s || !r.s.hit) continue;
+  const frame = renderFrame(r.sc);
+  const rect = { x: r.det.cx - r.det.size / 2, y: r.det.cy - r.det.size / 2, size: r.det.size, angle: r.det.angle };
+  const res = SCAN.sampleGrid(frame, rect, r.sc.n);
+  res.cells.forEach((c, i) => { labelAll++; if (SCAN.hueClass(c) === r.sc.face[i]) labelOk++; });
+}
+
 const summary = {
   seed,
   frames: scenarios.length,
@@ -383,6 +400,7 @@ const summary = {
   falseLockRate: falseLocks.length / emptyReal.length,
   mosaicFalseLockRate: mosaicFalseLocks.length / emptyMosaic.length,
   oobLockRate: oobRes.filter((r) => r.det).length / oobRes.length,
+  labelErrRate: labelAll ? 1 - labelOk / labelAll : 0,
   medianCenterErr: hits.map((r) => r.s.centerErr).sort((a, b) => a - b)[hits.length >> 1] ?? null,
   medianAngleErr: hits.map((r) => r.s.angleErr).sort((a, b) => a - b)[hits.length >> 1] ?? null,
   frames_per_scenario: FRAMES,
@@ -392,7 +410,7 @@ const summary = {
 // The adversarial cap is looser: on a wall of cube-like tiles a wrong box is
 // recoverable (tracker confirm, capture gates and final solve validation all
 // still stand behind it), while on realistic scenes it stays hard-capped.
-summary.pass = summary.lockRate >= 0.9 && summary.badFitRate <= 0.02 && summary.badFitRateAdv <= 0.1 && summary.falseLockRate <= 0.02 && summary.oobLockRate <= 0.05;
+summary.pass = summary.lockRate >= 0.9 && summary.badFitRate <= 0.02 && summary.badFitRateAdv <= 0.1 && summary.falseLockRate <= 0.02 && summary.oobLockRate <= 0.05 && summary.labelErrRate <= 0.03;
 
 if (asJson) {
   console.log(JSON.stringify(summary, null, 2));
@@ -407,6 +425,7 @@ if (asJson) {
   console.log(`FALSE LOCKS: ${pct(summary.falseLockRate)} realistic (${falseLocks.length}/${emptyReal.length}, target ≤ 2%)${flDetail}`
     + ` · ${pct(summary.mosaicFalseLockRate)} on adversarial mosaic (informational)`);
   console.log(`OUT-OF-ALLOWANCE: ${pct(summary.oobLockRate)} locked (${oobRes.filter((r) => r.det).length}/${oobRes.length} tiny/far/tilted cubes, target ≤ 5%)`);
+  console.log(`COLOUR LABELS: ${pct(summary.labelErrRate)} misread on locked grids (${labelAll - labelOk}/${labelAll} cells, target ≤ 3%) — incl. white-balance casts`);
   if (summary.medianCenterErr !== null) {
     console.log(`median centre error ${pct(summary.medianCenterErr)} of size · median angle error ${summary.medianAngleErr.toFixed(1)}°`);
   }
