@@ -69,6 +69,9 @@ const result = await page.evaluate(async () => {
   const tab = {};
   for (const k in bundle.tables) tab[k] = bundle.tables[k];
   await call({ t: 'tables', tables: tab });
+  const tW = Date.now();
+  await call({ t: 'deepinit' }); // the prewarm path app.js uses on entering 4×4 mode
+  const warmMs = Date.now() - tW;
   const t0 = Date.now();
   const deep = await call({ t: 'deep', state: s, cfg: { rotate: 0, tries: 2, solutions: 2, results: 2 } });
   const deepMs = Date.now() - t0;
@@ -78,7 +81,7 @@ const result = await page.evaluate(async () => {
   const fin = await call({ t: 'finish', state: s, red });
   if (!fin.res || fin.res.error) return { error: 'finish: ' + (fin.res && fin.res.error) };
   const solved = C4.isSolved(C4.applyAlg(s, fin.res.moves));
-  return { redLen: red.length, totalLen: fin.res.moves.length, solved, deepMs };
+  return { redLen: red.length, totalLen: fin.res.moves.length, solved, warmMs, deepMs };
 });
 console.log('RESULT', JSON.stringify(result));
 await browser.close();

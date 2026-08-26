@@ -1430,7 +1430,7 @@ const TPR4 = (() => {
   // shortest SET24 sequence making a head G3-feasible ("bridge"): IDDFS on
   // incremental coordinates (wing perm over positions, axis masks, corner
   // parity). Callers sweep exact depths so cross-head minima come first.
-  function bridgeAtDepth(pre, depth) {
+  function bridgeAtDepth(pre, depth, budget) {
     const { maskT, cparFlip } = deepStructure();
     const feasible = feasibleFast;
     if (depth === 0) return feasible(pre.w0, pre.m0[0], pre.m0[1], pre.m0[2], pre.cpar0) ? [] : null;
@@ -1440,6 +1440,7 @@ const TPR4 = (() => {
     const dfs = (g, a0, a1, a2, cpar, togo, lastLayer) => {
       const w = wStack[g], nw = wStack[g + 1];
       for (const mi of SET24) {
+        if (budget && --budget.n < 0) return false;
         const tok = MOVES36[mi];
         if (tok[0] === lastLayer) continue;
         const wp = wingPerm[mi], T = maskT[mi];
@@ -1506,7 +1507,7 @@ const TPR4 = (() => {
     const wStack = Array.from({ length: 14 }, () => new Uint8Array(NW));
     const pathMi = [];
     let nodes = 0;
-    const nodeCap = opts.nodeCap || 3e6;
+    const nodeCap = opts.headsNodeCap || 3e6;
     const collectFrom = (prep) => {
       const s8b = new Uint8Array(prep.s8);
       let cur = s8b;
@@ -1614,6 +1615,7 @@ const TPR4 = (() => {
     // finish a diversity lottery at almost no extra search cost
     const wantSols = opts.solutions || 1;
     const extraNodes = opts.extraNodes || 2e6; // budget for solutions beyond the first
+    const deadline = opts.timeCapMs ? Date.now() + opts.timeCapMs : Infinity;
     const solutions = [];
     let nodes = 0, aborted = false, nodesAtFirst = -1;
     const dfs = (g, a, b, c, bit, bound, prevAxis, prevLayer) => {
@@ -1622,6 +1624,7 @@ const TPR4 = (() => {
         const ax = mAxis[k], ly = mLayer[k];
         if (ax === prevAxis && ly <= prevLayer) continue; // canonical same-axis order
         if (++nodes > nodeCap) { aborted = true; return true; }
+        if ((nodes & 0xfffff) === 0 && Date.now() > deadline) { aborted = true; return true; }
         if (nodesAtFirst >= 0 && nodes > nodesAtFirst + extraNodes) return true;
         const si = mSi[k], t = mTau[k];
         for (let x = 0; x < 12; x++) nrel[x] = t[rel[si[x]]];
@@ -1692,10 +1695,12 @@ const TPR4 = (() => {
       });
       let bestTotal = cands.length ? Math.min(...cands.map((c) => c.total)) : Infinity;
       let found = 0;
-      for (let d = 0; d <= (opts.maxBridge || 5); d++) {
+      const budget = { n: opts.bridgeNodeCap || 20e6 }; // shared across the whole sweep
+      for (let d = 0; d <= (opts.maxBridge || 5) && budget.n > 0; d++) {
         for (const c of pres) {
+          if (budget.n <= 0) break;
           if (c.head.length + d >= bestTotal + (opts.slackKeep === undefined ? 1 : opts.slackKeep)) continue;
-          const br = bridgeAtDepth(c, d);
+          const br = bridgeAtDepth(c, d, budget);
           if (!br) continue;
           let s8 = c.s8;
           for (const m of br) s8 = apply8(s8, m);
@@ -1722,9 +1727,12 @@ const TPR4 = (() => {
     const softMs = opts.softMs || 6000;
     const tried = Math.min(cands.length, opts.tries || 3);
     for (let i = 0; i < tried; i++) {
-      if (out.length && Date.now() - t0 > softMs) break; // enough, wrap up
+      if (Date.now() - t0 > softMs && (out.length || opts.bailEmpty)) break;
       const cand = cands[i];
-      const r = deepSolve3(cand.s8, { nodeCap: opts.nodeCap || 30e6, solutions: opts.solutions || 3 });
+      const r = deepSolve3(cand.s8, {
+        nodeCap: opts.nodeCap || 30e6, solutions: opts.solutions || 3, extraNodes: opts.extraNodes,
+        timeCapMs: opts.p3TimeCapMs,
+      });
       if (r.error) continue;
       for (const sol of r.solutions) {
         const moves = C4.cleanAlg4(cand.head.concat(cand.br, sol));

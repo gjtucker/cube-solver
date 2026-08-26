@@ -137,6 +137,22 @@
       }
       return best;
     },
+    // fire-and-forget: build the workers' deep pruning tables ahead of the
+    // first 4×4 solve (called when the user enters 4×4 mode, so the ~3s cost
+    // hides behind scanning/painting)
+    deepWarmed: false,
+    prewarmDeep() {
+      if (this.deepWarmed || typeof Worker === 'undefined') return;
+      this.deepWarmed = true;
+      this.loadTables().then((tables) => {
+        const TPR4 = window.TPR4;
+        const n = Math.min(TPR4.PORTFOLIO.length, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
+        for (const w of this.getPool(n, tables)) this.call(w, { t: 'deepinit' }).catch(() => {});
+      }).catch(() => {});
+    },
+    // fast mode runs the deep engine too, with tighter caps: one rotation per
+    // available worker, then the best few reductions get quick parallel 3×3
+    // finishes. Beam portfolio and the synchronous path remain the fallbacks.
     async solveFast(state) {
       if (typeof Worker === 'undefined') return C4.solve4(state, 'fast');
       try {
@@ -144,17 +160,49 @@
         const tables = await this.loadTables();
         const n = Math.min(TPR4.PORTFOLIO.length, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
         const pool = this.getPool(n, tables);
-        const reds = await Promise.all(TPR4.PORTFOLIO.slice(0, pool.length).map((cfg, i) =>
-          this.call(pool[i], { t: 'reduce', state, cfg })));
-        let best = null, bestCost = Infinity;
-        for (const r of reds) {
-          if (!r || !r.red) continue;
-          const cost = this.reductionCost(state, r.red);
-          if (cost < bestCost) { best = r.red; bestCost = cost; }
+        const rots = [0, 1, 2].slice(0, pool.length);
+        const fastCfg = (rotate) => ({
+          rotate, tries: 3, solutions: 2, results: 2,
+          softMs: 3200, bailEmpty: true, p3TimeCapMs: 1400, headsNodeCap: 1.5e6,
+          nodeCap: 15e6, extraNodes: 1e6, bridgedCap: 4, bridgeNodeCap: 1.2e6,
+        });
+        const deepRes = await Promise.all(rots.map((rotate, i) =>
+          this.call(pool[i], { t: 'deep', state, cfg: fastCfg(rotate) })));
+        const cands = [];
+        for (const r of deepRes) if (r && r.reds) for (const red of r.reds) cands.push(red);
+        if (!cands.length) {
+          // rare rescue: bigger budgets still beat the ~60-move beam fallback
+          const rescue = await Promise.all(rots.map((rotate, i) =>
+            this.call(pool[i], { t: 'deep', state, cfg: { rotate, tries: 3, solutions: 2, results: 2, softMs: 8000 } })));
+          for (const r of rescue) if (r && r.reds) for (const red of r.reds) cands.push(red);
         }
-        if (!best) return C4.solve4(state, 'fast');
-        const fin = await this.call(pool[0], { t: 'finish', state, red: best });
-        return fin && fin.res ? fin.res : C4.solve4(state, 'fast');
+        let picks = [];
+        if (cands.length) {
+          cands.sort((a, b) => a.length - b.length);
+          for (const red of cands) {
+            if (!picks.some((p) => p.join(' ') === red.join(' '))) picks.push(red);
+            if (picks.length === 3) break;
+          }
+        } else {
+          // fallback: beam portfolio race
+          const reds = await Promise.all(TPR4.PORTFOLIO.slice(0, pool.length).map((cfg, i) =>
+            this.call(pool[i], { t: 'reduce', state, cfg })));
+          let best = null, bestCost = Infinity;
+          for (const r of reds) {
+            if (!r || !r.red) continue;
+            const cost = this.reductionCost(state, r.red);
+            if (cost < bestCost) { best = r.red; bestCost = cost; }
+          }
+          if (!best) return C4.solve4(state, 'fast');
+          picks = [best];
+        }
+        const budget3 = { timeLimit: 1500, target: 19, minSearch: 400 };
+        const fins = await this.mapPool(pool, picks, (red) => ({ t: 'finish', state, red, budget3 }));
+        let best = null;
+        for (const f of fins) {
+          if (f && f.res && !f.res.error && f.res.moves && (!best || f.res.moves.length < best.moves.length)) best = f.res;
+        }
+        return best || C4.solve4(state, 'fast');
       } catch (_) {
         return C4.solve4(state, 'fast');   // any worker trouble: solve synchronously
       }
@@ -742,6 +790,7 @@
       await waitIdle();
       exitPlayback();
       mode = t.dataset.mode;
+      if (mode === '4') solver4.prewarmDeep();
       document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === t));
       howtoEl.innerHTML = HOWTO[mode];
       hint3d.textContent = HINT[mode];
@@ -1292,6 +1341,7 @@
   buildPatterns();
   syncView();
   render();
+  if (mode === '4') solver4.prewarmDeep(); // restored/shared 4×4: warm the deep tables now
   // resume an in-progress solution at the exact move it was left on.
   // enterPlayback resets pbState to baseState, so advance it afterwards.
   if (!sharedCube && savedState && savedState.playback && savedState.playback.solution

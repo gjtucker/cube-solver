@@ -10,9 +10,10 @@
 //   node tests/solve4-harness.mjs --json
 //   node tests/solve4-harness.mjs --strict        # nonzero exit unless targets met
 //
-// Acceptance targets (agreed for the shipped-tables work):
-//   - average total moves <= 70        (baseline before shipped tables: ~87)
-//   - average solve wall time <= 5000ms (baseline: ~11500ms)
+// Acceptance targets:
+//   - fast: average total moves <= 50, average wall time <= 5000ms
+//     (beam-era fast path: ~61 moves; pre-shipped-tables baseline: ~87)
+//   - hard: average total moves <= 48, average wall time <= 30s
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -44,14 +45,16 @@ const N = opt('n', 20);
 const seed = opt('seed', 1);
 const asJson = args.includes('--json');
 const strict = args.includes('--strict');
-// default = the product pipeline: shipped tables + the portfolio spread over
-// parallel workers. --sequential measures the no-worker fallback instead;
-// --hard measures the "Search harder" mode (exact-phase-3 deep reductions
-// across three color-axis rotations + rich 3x3 finishes; targets ≤48 moves /
-// ≤30s instead of ≤70 / ≤5s; measured 44.9 on seeds 1 and 7 — the old beam
-// portfolio measured 53.9 / 58.0).
+// default = the product pipeline: the deep engine (exact phase 3) with fast
+// caps, one color-axis rotation per worker, prewarmed pruning tables
+// (targets ≤50 moves / ≤5s; measured 45.5-45.8 on seeds 1 and 7).
+// --beams measures the old beam-portfolio fast path (≤70 / ≤5s);
+// --sequential measures the no-worker synchronous fallback;
+// --hard measures the "Search harder" mode (bigger budgets + rich 3x3
+// finishes; targets ≤48 moves / ≤30s; measured 44.9 on seeds 1, 7 and 42).
 const sequential = args.includes('--sequential');
 const hard = args.includes('--hard');
+const useBeams = args.includes('--beams');
 
 const bundlePath = join(root, 'tables', `tpr4-v${TPR4.TABLES_VERSION}.bin.gz`);
 const tBuild0 = Date.now();
@@ -69,6 +72,9 @@ const WORKER_SRC = `
   parentPort.on('message', (m) => {
     if (m.t === 'finish') {
       parentPort.postMessage({ res: C4.solve4(m.state, 'fast', { reduction: m.red, budget3: m.budget3 }) });
+    } else if (m.t === 'deepinit') {
+      TPR4.deepInit();
+      parentPort.postMessage({ ok: true });
     } else if (m.t === 'deep') {
       const probe = new C4.Solver4(m.state);
       probe.deriveScheme();
@@ -110,7 +116,48 @@ async function mapPool(msgs) {
   }));
   return out;
 }
+// fast mode = the deep engine with tight caps: one rotation per worker,
+// quick parallel 3x3 finishes on the best few reductions (mirrors app.js's
+// solveFast); --beams measures the old beam-portfolio fast path instead
+const FAST_DEEP_CFG = (rotate) => ({
+  rotate, tries: 3, solutions: 2, results: 2,
+  softMs: 3200, bailEmpty: true, p3TimeCapMs: 1400, headsNodeCap: 1.5e6,
+  nodeCap: 15e6, extraNodes: 1e6, bridgedCap: 4, bridgeNodeCap: 1.2e6,
+});
+// rescue round for the rare scramble the capped configs give up on: bigger
+// budgets beat falling back to the ~60-move beam path
+const RESCUE_DEEP_CFG = (rotate) => ({
+  rotate, tries: 3, solutions: 2, results: 2, softMs: 8000,
+});
 async function solveParallel(s) {
+  if (useBeams) return solveParallelBeams(s);
+  const pool = getPool();
+  const rots = [0, 1, 2].slice(0, pool.length);
+  const deepRes = await Promise.all(rots.map((rotate, i) =>
+    callOn(pool[i], { t: 'deep', state: s, cfg: FAST_DEEP_CFG(rotate) })));
+  const cands = [];
+  for (const r of deepRes) if (r.reds) for (const red of r.reds) cands.push(red);
+  if (!cands.length) {
+    const rescue = await Promise.all(rots.map((rotate, i) =>
+      callOn(pool[i], { t: 'deep', state: s, cfg: RESCUE_DEEP_CFG(rotate) })));
+    for (const r of rescue) if (r.reds) for (const red of r.reds) cands.push(red);
+  }
+  if (!cands.length) return solveParallelBeams(s);
+  cands.sort((a, b) => a.length - b.length);
+  const picks = [];
+  for (const red of cands) {
+    if (!picks.some((p) => p.join(' ') === red.join(' '))) picks.push(red);
+    if (picks.length === 3) break;
+  }
+  const budget3 = { timeLimit: 1500, target: 19, minSearch: 400 };
+  const fins = await mapPool(picks.map((red) => ({ t: 'finish', state: s, red, budget3 })));
+  let best = null;
+  for (const f of fins) {
+    if (f.res && !f.res.error && f.res.moves && (!best || f.res.moves.length < best.moves.length)) best = f.res;
+  }
+  return best || C4.solve4(s, 'fast');
+}
+async function solveParallelBeams(s) {
   const reds = await Promise.all(getPool().map((w, i) => callOn(w, { state: s, cfg: TPR4.PORTFOLIO[i] })));
   const probe = new C4.Solver4(s);
   probe.deriveScheme();
@@ -173,6 +220,14 @@ async function solveHardBeams(s) {
 }
 
 const rand = rng(seed);
+// mirror the app: deep tables are prewarmed while the user scans/paints, so
+// they are not part of any solve's wall time (reported separately)
+let warmMs = 0;
+if (!useBeams && !sequential) {
+  const t0 = Date.now();
+  await Promise.all(getPool().map((w) => callOn(w, { t: 'deepinit' })));
+  warmMs = Date.now() - t0;
+}
 const rows = [];
 for (let i = 0; i < N; i++) {
   let s = C4.solvedState();
@@ -206,14 +261,14 @@ const summary = {
   phasedUsed: reds.length,   // scrambles where the phased reducer produced the solution
   pass: null,
 };
-const targets = hard ? { moves: 48, ms: 30000 } : { moves: 70, ms: 5000 };
+const targets = hard ? { moves: 48, ms: 30000 } : useBeams ? { moves: 70, ms: 5000 } : { moves: 50, ms: 5000 };
 summary.mode = hard ? 'hard' : sequential ? 'sequential' : 'parallel';
 summary.pass = summary.totalAvg <= targets.moves && summary.msAvg <= targets.ms;
 
 if (asJson) {
   console.log(JSON.stringify(summary, null, 2));
 } else {
-  console.log(`table build: ${buildMs}ms · ${N} scrambles (seed ${seed}) · mode ${summary.mode}`);
+  console.log(`table build: ${buildMs}ms · deep prewarm: ${warmMs}ms · ${N} scrambles (seed ${seed}) · mode ${summary.mode}`);
   console.log(`MOVES:  avg ${summary.totalAvg} (target ≤ ${targets.moves}) · median ${summary.totalMedian} · p90 ${summary.totalP90} · max ${summary.totalMax} · OBTM avg ${summary.obtmAvg}`);
   console.log(`        reduction avg ${summary.reductionAvg} · 3x3 finish avg ${summary.threeAvg} · phased path used ${summary.phasedUsed}/${N}`);
   console.log(`TIME:   avg ${summary.msAvg}ms (target ≤ ${targets.ms}ms) · max ${summary.msMax}ms`);

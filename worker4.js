@@ -15,6 +15,11 @@ onmessage = (e) => {
       for (const k in m.tables) map[k] = new Uint8Array(m.tables[k]);
       TPR4.importTables(map);
       postMessage({ id: m.id, ok: true });
+    } else if (m.t === 'deepinit') {
+      // prewarm: build this worker's deep pruning tables (~3s) ahead of the
+      // first solve, so entering 4×4 mode hides the cost behind scanning
+      TPR4.deepInit();
+      postMessage({ id: m.id, ok: true });
     } else if (m.t === 'reduce') {
       // tables not shipped? buildAll runs here, off the main thread
       const probe = new C4.Solver4(m.state);
