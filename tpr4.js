@@ -25,8 +25,10 @@
 // Tables ship pre-built (tables/tpr4-v1.bin.gz, ~228 KB gzipped; regenerate
 // with tools/gen-tables.mjs) and are fetched at page load; generating them
 // on-device (~10 s) remains the fallback when the download is unavailable.
-// The deep engine's edge table is always built on-device (~10 s, 57 MB),
-// which is why the app prewarms it in the background on entering 4x4 mode.
+// The deep engine's edge table is always built on-device (57 MB) and staged:
+// a depth-8 horizon is ready in ~1.5 s and is enough to solve with, then the
+// horizon is pushed to depth 9 (~3x fewer search nodes) a chunk at a time in
+// the background. The app prewarms it on entering 4x4 mode.
 
 const C4t = typeof module !== 'undefined' ? require('./cube4.js') : globalThis.Cube4;
 
@@ -1322,7 +1324,7 @@ const TPR4 = (() => {
   // is the incremental step edgeStep() below, and it replaces a full distance
   // lookup with a single shift-and-mask on every node.
   const N_EVEN = 239500800;      // 12!/2 -- every even permutation of S12
-  const EDGE_DEPTH = 9;          // BFS horizon; "≥10" beyond it
+  let EDGE_DEPTH = 8;            // initial horizon; upgradeEdgeStep pushes it to 9
   let edgeBits = null;           // Uint8Array(N_EVEN/4)
 
   function edgeRead(evenRank) {
@@ -1386,8 +1388,9 @@ const TPR4 = (() => {
     write(EDGE_GOAL_RANK, 0);
     let frontier = new Uint32Array([goal]);
     for (let d = 0; d < EDGE_DEPTH; d++) {
-      const last = d + 1 === EDGE_DEPTH;   // final level: mark only, no frontier
-      const next = last ? null : new Uint32Array(Math.max(64, frontier.length * 12));
+      // the deepest level's frontier is kept too, so the horizon can later be
+      // pushed one level further without redoing the BFS
+      const next = new Uint32Array(Math.max(64, frontier.length * 12));
       let n = 0, found = 0;
       const val = (d + 1) % 3;
       const p = new Uint8Array(12), q = new Uint8Array(12);
@@ -1401,15 +1404,50 @@ const TPR4 = (() => {
           if (((edgeBits[er >> 2] >> ((er & 3) << 1)) & 3) === 3) {
             write(er, val);
             found++;
-            if (!last) next[n++] = nr;
+            next[n++] = nr;
           }
         }
       }
-      frontier = last ? new Uint32Array(0) : next.subarray(0, n);
+      frontier = next.subarray(0, n);
       if (progress) progress('edge table depth ' + (d + 1), found);
       if (!found) break;
     }
+    edgeFrontier = frontier;   // states at exactly EDGE_DEPTH
   }
+
+  // Push the horizon one level deeper, a slice of the frontier at a time, so a
+  // worker can still serve solves in between chunks. A half-written level is
+  // safe: an unmarked state still reports the current horizon + 1, which stays
+  // a valid lower bound, and EDGE_DEPTH only advances once the level is whole.
+  let edgeFrontier = null, upgradeAt = 0;
+  function upgradeEdgeStep(budget) {
+    if (!edgeFrontier) return true;
+    const { sigmaInv, tau } = deepStructure();
+    const val = (EDGE_DEPTH + 1) % 3;
+    const p = new Uint8Array(12), q = new Uint8Array(12);
+    const end = Math.min(edgeFrontier.length, upgradeAt + (budget || 30000));
+    for (let fi = upgradeAt; fi < end; fi++) {
+      unrankPerm12(edgeFrontier[fi], p);
+      for (const mi of G3) {
+        const si = sigmaInv[mi], t = tau[mi];
+        for (let x = 0; x < 12; x++) q[x] = t[p[si[x]]];
+        const er = rankPerm12(q) >>> 1;
+        const sh = (er & 3) << 1;
+        if (((edgeBits[er >> 2] >> sh) & 3) === 3) {
+          edgeBits[er >> 2] = (edgeBits[er >> 2] & ~(3 << sh)) | (val << sh);
+        }
+      }
+    }
+    upgradeAt = end;
+    if (upgradeAt >= edgeFrontier.length) {
+      EDGE_DEPTH++;             // now consistent: the level is fully marked
+      edgeFrontier = null;
+      upgradeAt = 0;
+      return true;
+    }
+    return false;
+  }
+  function edgeUpgradePending() { return edgeFrontier !== null; }
 
   function buildCpTable() {
     const { maskT, sliceDouble } = deepStructure();
@@ -1433,6 +1471,13 @@ const TPR4 = (() => {
       d++;
     }
     return cpDist;
+  }
+  // horizon is a build-time trade: depth 9 searches ~3x fewer nodes, depth 8
+  // builds several times faster. Must be set before deepInit.
+  function setEdgeDepth(d) {
+    if (deepTablesBuilt) return false;
+    EDGE_DEPTH = d;
+    return true;
   }
   let deepTablesBuilt = false;
   function deepInit(progress) {
@@ -1882,7 +1927,9 @@ const TPR4 = (() => {
     phasedReduce, walkPhase, phase3Beam8, score8, centersExact, encode96, idaStar8,
     classMask24, lrMask16, axisMasks, wingParityOf, phase1Options, phase2Options, phaseHeads,
     endgameBeam8, pllParity8, reductionMeta,
-    deepInit, deepReduce, deepSolve3, deepFeasible8, deepHeads, bridgeAtDepth, rotateScheme,
+    deepInit, setEdgeDepth, upgradeEdgeStep, edgeUpgradePending,
+    get edgeBits() { return edgeBits; }, get edgeDepth() { return EDGE_DEPTH; },
+    deepReduce, deepSolve3, deepFeasible8, deepHeads, bridgeAtDepth, rotateScheme,
     cornerParity8, relOf8, rankPerm12, unrankPerm12, permParity, axisMasks8,
     get deepTablesBuilt() { return deepTablesBuilt; },
     apply8, hash8, centersExact8, allPaired8, wingParity8,

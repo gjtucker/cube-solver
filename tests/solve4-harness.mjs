@@ -9,6 +9,7 @@
 //   node tests/solve4-harness.mjs --n 50 --seed 7
 //   node tests/solve4-harness.mjs --json
 //   node tests/solve4-harness.mjs --strict        # nonzero exit unless targets met
+//   node tests/solve4-harness.mjs --no-upgrade    # the depth-8 window, pre-upgrade
 //
 // Acceptance targets:
 //   - fast: average total moves <= 48, average wall time <= 2000ms
@@ -55,6 +56,9 @@ const strict = args.includes('--strict');
 const sequential = args.includes('--sequential');
 const hard = args.includes('--hard');
 const useBeams = args.includes('--beams');
+// --no-upgrade measures the window right after prewarm, before the background
+// depth-9 upgrade lands (i.e. the worst case a user can actually hit)
+const noUpgrade = args.includes('--no-upgrade');
 
 const bundlePath = join(root, 'tables', `tpr4-v${TPR4.TABLES_VERSION}.bin.gz`);
 const tBuild0 = Date.now();
@@ -75,6 +79,11 @@ const WORKER_SRC = `
     } else if (m.t === 'deepinit') {
       TPR4.deepInit();
       parentPort.postMessage({ ok: true });
+    } else if (m.t === 'deepupgrade') {
+      // drive the background horizon upgrade to completion so the measured
+      // numbers are the steady state a user reaches, not a half-built one
+      while (!TPR4.upgradeEdgeStep(30000));
+      parentPort.postMessage({ ok: true, depth: TPR4.edgeDepth });
     } else if (m.t === 'deep') {
       const probe = new C4.Solver4(m.state);
       probe.deriveScheme();
@@ -231,11 +240,16 @@ async function solveHardBeams(s) {
 const rand = rng(seed);
 // mirror the app: deep tables are prewarmed while the user scans/paints, so
 // they are not part of any solve's wall time (reported separately)
-let warmMs = 0;
+let warmMs = 0, upgradeMs = 0;
 if (!useBeams && !sequential) {
   const t0 = Date.now();
   await Promise.all(getPool().map((w) => callOn(w, { t: 'deepinit' })));
   warmMs = Date.now() - t0;
+  if (!noUpgrade) {
+    const t1 = Date.now();
+    await Promise.all(getPool().map((w) => callOn(w, { t: 'deepupgrade' })));
+    upgradeMs = Date.now() - t1;
+  }
 }
 const rows = [];
 for (let i = 0; i < N; i++) {
@@ -277,7 +291,7 @@ summary.pass = summary.totalAvg <= targets.moves && summary.msAvg <= targets.ms;
 if (asJson) {
   console.log(JSON.stringify(summary, null, 2));
 } else {
-  console.log(`table build: ${buildMs}ms · deep prewarm: ${warmMs}ms · ${N} scrambles (seed ${seed}) · mode ${summary.mode}`);
+  console.log(`table build: ${buildMs}ms · deep ready: ${warmMs}ms (+${upgradeMs}ms background upgrade) · ${N} scrambles (seed ${seed}) · mode ${summary.mode}`);
   console.log(`MOVES:  avg ${summary.totalAvg} (target ≤ ${targets.moves}) · median ${summary.totalMedian} · p90 ${summary.totalP90} · max ${summary.totalMax} · OBTM avg ${summary.obtmAvg}`);
   console.log(`        reduction avg ${summary.reductionAvg} · 3x3 finish avg ${summary.threeAvg} · phased path used ${summary.phasedUsed}/${N}`);
   console.log(`TIME:   avg ${summary.msAvg}ms (target ≤ ${targets.ms}ms) · max ${summary.msMax}ms`);
