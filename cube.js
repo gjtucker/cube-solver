@@ -1480,7 +1480,22 @@ const K = (() => {
   const SLICE_IDX = EDGE_SLOTS.map((n, i) => i).filter((i) => !/[UD]/.test(EDGE_SLOTS[i]));
   const NONSLICE_IDX = EDGE_SLOTS.map((n, i) => i).filter((i) => /[UD]/.test(EDGE_SLOTS[i]));
   const P2_MOVESET = ['U', 'U2', "U'", 'D', 'D2', "D'", 'R2', 'L2', 'F2', 'B2'];
+  const P2_SET = new Set(P2_MOVESET);
   const AXIS = { U: 0, D: 0, R: 1, L: 1, F: 2, B: 2 };
+  // Move-pair legality as a table instead of string work inside the search.
+  // SKIPF[lastFace * 6 + face] is 1 when a move on `face` may not follow one on
+  // `lastFace`: same face, or same axis in the non-canonical order. Face 6
+  // means "no previous move". This test used to run two String.includes calls
+  // on every node of both phases.
+  const FACE_CHARS = MOVES18.filter((_, i) => i % 3 === 0).map((m) => m[0]);
+  const SKIPF = new Uint8Array(7 * 6);
+  for (let lf = 0; lf < 6; lf++) {
+    for (let f = 0; f < 6; f++) {
+      const L = FACE_CHARS[lf], F = FACE_CHARS[f];
+      SKIPF[lf * 6 + f] = (F === L || (AXIS[F] === AXIS[L] && 'DLB'.includes(L) && 'URF'.includes(F))) ? 1 : 0;
+    }
+  }
+  const FACE_OF_M1 = Uint8Array.from(MOVES18.map((_, m) => (m / 3) | 0));
 
   // C(n,k) table
   const CNK = [];
@@ -1700,13 +1715,17 @@ const K = (() => {
     const co0 = coOf(c0.co), eo0 = eoOf(c0.eo), sl0 = sliceOf(c0.ep);
 
     const p1moves = [];
-    const runPhase2 = (cubies, lastFace) => {
+    const FACE_OF_M2 = Uint8Array.from(P2_MOVESET.map((mv) => FACE_CHARS.indexOf(mv[0])));
+    let probe = 0;   // clock is sampled every 1024 nodes, not every node
+    const outOfTime = () => (++probe & 1023) === 0 && Date.now() - start > timeLimit;
+
+    const runPhase2 = (cubies, lastF) => {
       const cp0 = cpOf(cubies.cp), ep80 = ep8Of(cubies.ep), eps0 = epsOf(cubies.ep);
       const maxD2 = Math.min(17, (best ? best.length : 30) - p1moves.length - 1);
       const h0 = Math.max(prunCpEps[cp0 * 24 + eps0], prunEp8Eps[ep80 * 24 + eps0]);
       if (h0 > maxD2) return;
       const p2moves = [];
-      const dfs2 = (cp, ep8, eps, togo, lastAxisFace) => {
+      const dfs2 = (cp, ep8, eps, togo, lastFace) => {
         if (togo === 0) {
           if (cp === 0 && ep8 === 0 && eps === 0) {
             best = p1moves.concat(p2moves);
@@ -1715,34 +1734,37 @@ const K = (() => {
           return false;
         }
         for (let m = 0; m < 10; m++) {
-          const face = P2_MOVESET[m][0];
-          if (face === lastAxisFace) continue;
-          if (AXIS[face] === AXIS[lastAxisFace] && 'DLB'.includes(lastAxisFace) && 'URF'.includes(face)) continue;
+          const f = FACE_OF_M2[m];
+          if (SKIPF[lastFace * 6 + f]) continue;
           const ncp = cpMove[cp * 10 + m], nep8 = ep8Move[ep8 * 10 + m], neps = epsMove[eps * 10 + m];
           const h = Math.max(prunCpEps[ncp * 24 + neps], prunEp8Eps[nep8 * 24 + neps]);
           if (h >= togo) continue;
           p2moves.push(P2_MOVESET[m]);
-          if (dfs2(ncp, nep8, neps, togo - 1, face)) return true;
+          if (dfs2(ncp, nep8, neps, togo - 1, f)) return true;
           p2moves.pop();
         }
         return false;
       };
       for (let d2 = h0; d2 <= maxD2; d2++) {
         if (Date.now() - start > timeLimit && best) return;
-        if (dfs2(cp0, ep80, eps0, d2, lastFace || '-')) return;
+        if (dfs2(cp0, ep80, eps0, d2, lastF)) return;
       }
     };
 
-    // phase-1 IDA
-    const dfs1 = (co, eo, sl, togo, lastFace, cubies) => {
+    // phase-1 IDA. Cubies are NOT threaded through the search: rebuilding them
+    // from p1moves at a leaf costs a dozen applyCubieMove calls, where carrying
+    // them allocated four arrays and an object on every single node.
+    const dfs1 = (co, eo, sl, togo, lastFace) => {
       if (best && p1moves.length + togo >= best.length) return false;
-      if (Date.now() - start > timeLimit && best) return true; // abort
+      if (outOfTime() && best) return true; // abort
       if (togo === 0) {
         if (co === 0 && eo === 0 && sl === SLICE_HOME) {
           // standard: last move of a non-trivial phase 1 must not be a phase-2 move
           const last = p1moves[p1moves.length - 1];
-          if (p1moves.length && last && P2_MOVESET.includes(last)) return false;
-          runPhase2(cubies, last ? last[0] : null);
+          if (p1moves.length && last && P2_SET.has(last)) return false;
+          let cub = c0;
+          for (let i = 0; i < p1moves.length; i++) cub = applyCubieMove(cub, p1moves[i]);
+          runPhase2(cub, last ? FACE_CHARS.indexOf(last[0]) : 6);
           // keep improving for a short while even after hitting the target,
           // so trivial scrambles come back with their trivial solutions
           if (best && best.length <= target && Date.now() - start >= minSearch) return true;
@@ -1750,16 +1772,13 @@ const K = (() => {
         return false;
       }
       for (let m = 0; m < 18; m++) {
-        const mv = MOVES18[m];
-        const face = mv[0];
-        if (face === lastFace) continue;
-        if (AXIS[face] === AXIS[lastFace] && 'DLB'.includes(lastFace) && 'URF'.includes(face)) continue;
+        const f = FACE_OF_M1[m];
+        if (SKIPF[lastFace * 6 + f]) continue;
         const nco = coMove[co * 18 + m], neo = eoMove[eo * 18 + m], nsl = sliceMove[sl * 18 + m];
         const h = Math.max(prunCoSlice[nco * 495 + nsl], prunEoSlice[neo * 495 + nsl]);
         if (h >= togo) continue;
-        p1moves.push(mv);
-        const ncubies = applyCubieMove(cubies, mv);
-        if (dfs1(nco, neo, nsl, togo - 1, face, ncubies)) return true;
+        p1moves.push(MOVES18[m]);
+        if (dfs1(nco, neo, nsl, togo - 1, f)) return true;
         p1moves.pop();
       }
       return false;
@@ -1768,7 +1787,7 @@ const K = (() => {
     const h1 = Math.max(prunCoSlice[co0 * 495 + sl0], prunEoSlice[eo0 * 495 + sl0]);
     for (let d1 = h1; d1 <= 12; d1++) {
       p1moves.length = 0;
-      if (dfs1(co0, eo0, sl0, d1, '-', c0)) break;
+      if (dfs1(co0, eo0, sl0, d1, 6)) break;
       if (best && (Date.now() - start > timeLimit || d1 >= best.length)) break;
     }
     if (!best) return { error: 'search failed' };
