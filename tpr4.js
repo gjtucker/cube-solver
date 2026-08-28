@@ -1,3 +1,7 @@
+// CubeSnap — a free in-browser Rubik's cube solver.
+// Copyright (C) 2026 CubeSnap contributors
+// SPDX-License-Identifier: GPL-3.0-or-later (see LICENSE for the full text)
+
 (function(){
 // Phased-reduction solver for the 4x4: a chain of nested move-set
 // restrictions (Thistlethwaite's idea) so later phases structurally cannot

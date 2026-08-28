@@ -1,3 +1,5 @@
+/* CubeSnap — Copyright (C) 2026 CubeSnap contributors
+   SPDX-License-Identifier: GPL-3.0-or-later (see LICENSE) */
   /* dark (default) — flat graphite surfaces, one restrained accent.
      Light is a token swap below; the pre-stylesheet script in index.html
      resolves the effective theme (?theme > saved choice > system) into

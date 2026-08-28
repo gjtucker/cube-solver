@@ -1,3 +1,7 @@
+// CubeSnap — a free in-browser Rubik's cube solver.
+// Copyright (C) 2026 CubeSnap contributors
+// SPDX-License-Identifier: GPL-3.0-or-later (see LICENSE for the full text)
+
 (function(){
 // 4x4x4 (Rubik's Revenge) engine + reduction solver.
 // Facelet model: 96 stickers, faces U,R,F,D,L,B (16 each, row-major 4x4).

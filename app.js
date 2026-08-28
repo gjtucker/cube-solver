@@ -1,3 +1,7 @@
+// CubeSnap — a free in-browser Rubik's cube solver.
+// Copyright (C) 2026 CubeSnap contributors
+// SPDX-License-Identifier: GPL-3.0-or-later (see LICENSE for the full text)
+
 (() => {
   const C = window.Cube;
   const C4 = window.Cube4;

@@ -1,3 +1,7 @@
+// CubeSnap — a free in-browser Rubik's cube solver.
+// Copyright (C) 2026 CubeSnap contributors
+// SPDX-License-Identifier: GPL-3.0-or-later (see LICENSE for the full text)
+
 // Service worker: makes the app installable and usable offline.
 // Strategy: network-first with cache fallback for every same-origin GET, so
 // deploys are picked up immediately and the cache only serves when the
