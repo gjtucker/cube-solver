@@ -900,7 +900,7 @@
     },
     fast: {
       '3': 'A two-phase computer method: around 20–25 moves, one straight run with no stages to learn. First use takes a few seconds to warm up.',
-      '4': 'Phased reduction guided by pre-built lookup tables (a 228 KB download, cached for offline use), then a two-phase finish — typically 55–70 moves. Solving takes a few seconds.',
+      '4': 'Phased reduction finished by an exact table-driven search — typically around 46 moves in about a second (the tables warm up in the background when you open this tab). "Search harder" trades ~15 s for a couple more moves off.',
       '2': 'The mathematically shortest solution — never more than 11 turns. First use takes a moment to warm up.',
       'm': 'The mathematically shortest way back to a perfect cube — never more than 11 turns. First use takes a moment to warm up.',
     },
