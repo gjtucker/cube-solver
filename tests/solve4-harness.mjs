@@ -9,11 +9,12 @@
 //   node tests/solve4-harness.mjs --n 50 --seed 7
 //   node tests/solve4-harness.mjs --json
 //   node tests/solve4-harness.mjs --strict        # nonzero exit unless targets met
+//   node tests/solve4-harness.mjs --no-upgrade    # the depth-8 window, pre-upgrade
 //
 // Acceptance targets:
-//   - fast: average total moves <= 50, average wall time <= 5000ms
+//   - fast: average total moves <= 48, average wall time <= 2000ms
 //     (beam-era fast path: ~61 moves; pre-shipped-tables baseline: ~87)
-//   - hard: average total moves <= 48, average wall time <= 30s
+//   - hard: average total moves <= 46, average wall time <= 20s
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -47,14 +48,17 @@ const asJson = args.includes('--json');
 const strict = args.includes('--strict');
 // default = the product pipeline: the deep engine (exact phase 3) with fast
 // caps, one color-axis rotation per worker, prewarmed pruning tables
-// (targets ≤50 moves / ≤5s; measured 45.5-45.8 on seeds 1 and 7).
+// (measured 45.6 moves / 992ms on seed 1, 46.4 / 1038ms on seed 7).
 // --beams measures the old beam-portfolio fast path (≤70 / ≤5s);
 // --sequential measures the no-worker synchronous fallback;
-// --hard measures the "Search harder" mode (bigger budgets + rich 3x3
-// finishes; targets ≤48 moves / ≤30s; measured 44.9 on seeds 1, 7 and 42).
+// --hard measures the "Search harder" mode, which spends its budget on a much
+// wider head pool (measured 44.1 moves / ~11.8s on seeds 1 and 7).
 const sequential = args.includes('--sequential');
 const hard = args.includes('--hard');
 const useBeams = args.includes('--beams');
+// --no-upgrade measures the window right after prewarm, before the background
+// depth-9 upgrade lands (i.e. the worst case a user can actually hit)
+const noUpgrade = args.includes('--no-upgrade');
 
 const bundlePath = join(root, 'tables', `tpr4-v${TPR4.TABLES_VERSION}.bin.gz`);
 const tBuild0 = Date.now();
@@ -75,6 +79,11 @@ const WORKER_SRC = `
     } else if (m.t === 'deepinit') {
       TPR4.deepInit();
       parentPort.postMessage({ ok: true });
+    } else if (m.t === 'deepupgrade') {
+      // drive the background horizon upgrade to completion so the measured
+      // numbers are the steady state a user reaches, not a half-built one
+      while (!TPR4.upgradeEdgeStep(30000));
+      parentPort.postMessage({ ok: true, depth: TPR4.edgeDepth });
     } else if (m.t === 'deep') {
       const probe = new C4.Solver4(m.state);
       probe.deriveScheme();
@@ -120,9 +129,18 @@ async function mapPool(msgs) {
 // quick parallel 3x3 finishes on the best few reductions (mirrors app.js's
 // solveFast); --beams measures the old beam-portfolio fast path instead
 const FAST_DEEP_CFG = (rotate) => ({
-  rotate, tries: 3, solutions: 2, results: 2,
-  softMs: 3200, bailEmpty: true, p3TimeCapMs: 1400, headsNodeCap: 1.5e6,
-  nodeCap: 15e6, extraNodes: 1e6, bridgedCap: 4, bridgeNodeCap: 1.2e6,
+  rotate, tries: 2, solutions: 2, results: 2,
+  softMs: 1200, bailEmpty: true, p3TimeCapMs: 700, headsNodeCap: 1.2e6,
+  nodeCap: 12e6, extraNodes: 6e5, bridgedCap: 3, bridgeNodeCap: 6e5,
+});
+// "Search harder" spends its budget on a much wider head pool: enumerating
+// far more phase-1/2 heads and branch-and-bounding over them is worth ~2 moves
+// on the reduction, which is where the remaining slack lives now that phase 3
+// is exact.
+const HARD_DEEP_CFG = (rotate) => ({
+  rotate, tries: 40, solutions: 4, results: 4, softMs: 25000,
+  headCap: 40, p1cap: 60, p1slack: 2, p2cap: 6, perPrepCap: 6, tExtra: 7,
+  headsNodeCap: 30e6, nodeCap: 40e6, bridgedCap: 12, bridgeNodeCap: 20e6,
 });
 // rescue round for the rare scramble the capped configs give up on: bigger
 // budgets beat falling back to the ~60-move beam path
@@ -149,7 +167,7 @@ async function solveParallel(s) {
     if (!picks.some((p) => p.join(' ') === red.join(' '))) picks.push(red);
     if (picks.length === 3) break;
   }
-  const budget3 = { timeLimit: 1500, target: 19, minSearch: 400 };
+  const budget3 = { timeLimit: 600, target: 20, minSearch: 200 };
   const fins = await mapPool(picks.map((red) => ({ t: 'finish', state: s, red, budget3 })));
   let best = null;
   for (const f of fins) {
@@ -175,7 +193,7 @@ async function solveParallelBeams(s) {
 // 3x3 budget; shortest total wins. Beam portfolio remains the fallback.
 async function solveHard(s) {
   const deepRes = await mapPool([0, 1, 2].map((rotate) =>
-    ({ t: 'deep', state: s, cfg: { rotate, tries: 3, solutions: 4, results: 4 } })));
+    ({ t: 'deep', state: s, cfg: HARD_DEEP_CFG(rotate) })));
   const cands = [];
   for (const r of deepRes) if (r.reds) for (const red of r.reds) cands.push(red);
   if (!cands.length) return solveHardBeams(s);
@@ -222,11 +240,16 @@ async function solveHardBeams(s) {
 const rand = rng(seed);
 // mirror the app: deep tables are prewarmed while the user scans/paints, so
 // they are not part of any solve's wall time (reported separately)
-let warmMs = 0;
+let warmMs = 0, upgradeMs = 0;
 if (!useBeams && !sequential) {
   const t0 = Date.now();
   await Promise.all(getPool().map((w) => callOn(w, { t: 'deepinit' })));
   warmMs = Date.now() - t0;
+  if (!noUpgrade) {
+    const t1 = Date.now();
+    await Promise.all(getPool().map((w) => callOn(w, { t: 'deepupgrade' })));
+    upgradeMs = Date.now() - t1;
+  }
 }
 const rows = [];
 for (let i = 0; i < N; i++) {
@@ -261,14 +284,14 @@ const summary = {
   phasedUsed: reds.length,   // scrambles where the phased reducer produced the solution
   pass: null,
 };
-const targets = hard ? { moves: 48, ms: 30000 } : useBeams ? { moves: 70, ms: 5000 } : { moves: 50, ms: 5000 };
+const targets = hard ? { moves: 46, ms: 20000 } : useBeams ? { moves: 70, ms: 5000 } : { moves: 48, ms: 2000 };
 summary.mode = hard ? 'hard' : sequential ? 'sequential' : 'parallel';
 summary.pass = summary.totalAvg <= targets.moves && summary.msAvg <= targets.ms;
 
 if (asJson) {
   console.log(JSON.stringify(summary, null, 2));
 } else {
-  console.log(`table build: ${buildMs}ms · deep prewarm: ${warmMs}ms · ${N} scrambles (seed ${seed}) · mode ${summary.mode}`);
+  console.log(`table build: ${buildMs}ms · deep ready: ${warmMs}ms (+${upgradeMs}ms background upgrade) · ${N} scrambles (seed ${seed}) · mode ${summary.mode}`);
   console.log(`MOVES:  avg ${summary.totalAvg} (target ≤ ${targets.moves}) · median ${summary.totalMedian} · p90 ${summary.totalP90} · max ${summary.totalMax} · OBTM avg ${summary.obtmAvg}`);
   console.log(`        reduction avg ${summary.reductionAvg} · 3x3 finish avg ${summary.threeAvg} · phased path used ${summary.phasedUsed}/${N}`);
   console.log(`TIME:   avg ${summary.msAvg}ms (target ≤ ${targets.ms}ms) · max ${summary.msMax}ms`);

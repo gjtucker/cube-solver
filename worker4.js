@@ -16,10 +16,18 @@ onmessage = (e) => {
       TPR4.importTables(map);
       postMessage({ id: m.id, ok: true });
     } else if (m.t === 'deepinit') {
-      // prewarm: build this worker's deep pruning tables (~3s) ahead of the
-      // first solve, so entering 4×4 mode hides the cost behind scanning
+      // prewarm: build this worker's deep pruning tables ahead of the first
+      // solve, so entering 4×4 mode hides the cost behind scanning. The
+      // depth-8 horizon is ready in ~2s; the depth-9 upgrade then runs in
+      // chunks via setTimeout, so a solve arriving mid-upgrade is served
+      // between chunks instead of queueing behind the whole build.
       TPR4.deepInit();
       postMessage({ id: m.id, ok: true });
+      const step = () => {
+        if (TPR4.upgradeEdgeStep(30000)) return;
+        setTimeout(step, 0);
+      };
+      if (TPR4.edgeUpgradePending()) setTimeout(step, 0);
     } else if (m.t === 'reduce') {
       // tables not shipped? buildAll runs here, off the main thread
       const probe = new C4.Solver4(m.state);
