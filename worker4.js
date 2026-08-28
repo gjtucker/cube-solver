@@ -1,7 +1,11 @@
-// Solver worker for the 4×4 fast path: holds the phased-reduction tables and
-// runs one portfolio search config (or the finishing 3×3 stage) off the main
-// thread. Several workers run different configs in parallel; the shortest
-// reduction wins.
+// CubeSnap — a free in-browser Rubik's cube solver.
+// Copyright (C) 2026 CubeSnap contributors
+// SPDX-License-Identifier: GPL-3.0-or-later (see LICENSE for the full text)
+
+// Solver worker for the 4×4 fast path: holds the phased-reduction and deep
+// pruning tables, and runs deep exact-phase-3 reductions (one colour-axis
+// rotation per worker), beam-portfolio fallbacks, or the finishing 3×3 stage
+// off the main thread. The shortest reduction across workers wins.
 importScripts('cube.js', 'cube4.js', 'tpr4.js');
 
 const C4 = globalThis.Cube4;

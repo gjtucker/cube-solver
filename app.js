@@ -1,12 +1,18 @@
+// CubeSnap — a free in-browser Rubik's cube solver.
+// Copyright (C) 2026 CubeSnap contributors
+// SPDX-License-Identifier: GPL-3.0-or-later (see LICENSE for the full text)
+
 (() => {
   const C = window.Cube;
   const C4 = window.Cube4;
   // ---- 4×4 fast solver: shipped tables + parallel search workers ----
   // The table bundle is fetched once in the background (skipping the ~10s
   // on-device build) and shared with a small worker pool; each worker runs
-  // one portfolio search config and the shortest reduction wins. Every step
-  // degrades gracefully: no DecompressionStream / no Workers / failed fetch
-  // all fall back to the synchronous on-device path.
+  // the deep exact-phase-3 engine on one colour-axis rotation and the
+  // shortest reduction wins (the beam portfolio and the synchronous path
+  // remain fallbacks). Every step degrades gracefully: no
+  // DecompressionStream / no Workers / failed fetch all fall back to the
+  // synchronous on-device path.
   const solver4 = {
     tablesP: null, pool: null, calls: new Map(), nextId: 1,
     loadTables() {
@@ -444,7 +450,7 @@
     const cs = mode === '3' ? S : mode === '4' ? S * 0.75 : S * 1.5; // cubie size
     for (const k in cubies) {
       const { el, coords, faces } = cubies[k];
-      const step = mode === '3' ? S : mode === '4' ? S * 0.75 : S * 0.75;
+      const step = mode === '3' ? S : S * 0.75;
       el.dataset.base = `translate3d(${coords[0] * step}px, ${-coords[1] * step}px, ${coords[2] * step}px)`;
       el.style.transform = el.dataset.base;
       for (const f in faces) {
@@ -717,13 +723,17 @@
       else if (move[1] === '2') angle = 180;
       const axis = [n[0], -n[1], n[2]];
       const affected = [];
+      let lx = 0, ly = 0, lz = 0, lc = 0;   // mean coords of the turning layer
       for (const k in cubies) {
         const { el, coords } = cubies[k];
         const d = coords[0] * n[0] + coords[1] * n[1] + coords[2] * n[2];
         const inLayer = mode === '4'
           ? (isInner ? Math.abs(d - 0.5) < 0.01 : d > 1)
           : d >= 1;
-        if (inLayer) affected.push(el);
+        if (inLayer) {
+          affected.push(el);
+          lx += coords[0]; ly += coords[1]; lz += coords[2]; lc++;
+        }
       }
       // mirror-geometry turns pivot on the offset cut axis (through the cut
       // corner), which keeps the two halves on opposite sides of the cut
@@ -734,15 +744,50 @@
         ? `translate3d(${px}px, ${py}px, ${pz}px) rotate3d(${axis[0]}, ${axis[1]}, ${axis[2]}, ${angle}deg) translate3d(${-px}px, ${-py}px, ${-pz}px) `
         : `rotate3d(${axis[0]}, ${axis[1]}, ${axis[2]}, ${angle}deg) `;
       cubeEl.classList.add('turning');
+      // direction ring: a band in the turning layer's plane, just outside the
+      // cube, that sweeps along with the turn — face, layer and direction are
+      // all visible at a glance (skipped in mirror geometry, whose off-centre
+      // pivot would put the ring in the wrong place)
+      let ring = null;
+      if (lc && !(mode === 'm' && mirrorGeo)) {
+        const step = mode === '3' ? S : S * 0.75;
+        const R = S * 2.25;
+        ring = document.createElement('div');
+        ring.className = 'turnring';
+        ring.style.width = ring.style.height = `${2 * R}px`;
+        ring.style.left = `${-R}px`;
+        ring.style.top = `${-R}px`;
+        const rot = n[0] ? 'rotateY(90deg)' : n[1] ? 'rotateX(90deg)' : '';
+        const off = (n[0] ? lx / lc : n[1] ? ly / lc : lz / lc) * step;
+        ring.dataset.base = `${rot} translateZ(${off}px)`;
+        ring.style.transform = ring.dataset.base;
+        ring.innerHTML = `<svg viewBox="-110 -110 220 220">
+          <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M 94 -34 A 100 100 0 1 0 94 34" stroke="rgba(0,0,0,0.55)" stroke-width="9"/>
+            <path d="M 94 -34 A 100 100 0 1 0 94 34" stroke="#fff" stroke-width="4.5"/>
+            <path d="M 78 -46 L 94 -34 L 76 -18" stroke="rgba(0,0,0,0.55)" stroke-width="9"/>
+            <path d="M 78 -46 L 94 -34 L 76 -18" stroke="#fff" stroke-width="4.5"/>
+            <path d="M 78 46 L 94 34 L 76 18" stroke="rgba(0,0,0,0.55)" stroke-width="9"/>
+            <path d="M 78 46 L 94 34 L 76 18" stroke="#fff" stroke-width="4.5"/>
+          </g>
+        </svg>`;
+        cubeEl.appendChild(ring);
+        void ring.offsetWidth;   // commit the resting transform before animating
+      }
       affected.forEach((el) => {
         el.style.transition = `transform ${dur}ms cubic-bezier(0.35, 0, 0.25, 1)`;
         el.style.transform = pivot + el.dataset.base;
       });
+      if (ring) {
+        ring.style.transition = `transform ${dur}ms cubic-bezier(0.35, 0, 0.25, 1)`;
+        ring.style.transform = pivot + ring.dataset.base;
+      }
       setTimeout(() => {
         // a concurrent handler may have torn the playback state down (or an
         // engine hiccup thrown) — the promise must still settle, or animating
         // sticks forever and every await waitIdle() in the app hangs
         try {
+          if (ring) ring.remove();
           if (pbState) pbState = ENG().applyMove(pbState, move);
           affected.forEach((el) => { el.style.transition = 'none'; });
           render();
@@ -861,7 +906,7 @@
     },
     fast: {
       '3': 'A two-phase computer method: around 20–25 moves, one straight run with no stages to learn. First use takes a few seconds to warm up.',
-      '4': 'Phased reduction guided by pre-built lookup tables (a 228 KB download, cached for offline use), then a two-phase finish — typically 55–70 moves. Solving takes a few seconds.',
+      '4': 'Phased reduction finished by an exact table-driven search — typically around 46 moves in about a second (the tables warm up in the background when you open this tab). "Search harder" trades ~15 s for a couple more moves off.',
       '2': 'The mathematically shortest solution — never more than 11 turns. First use takes a moment to warm up.',
       'm': 'The mathematically shortest way back to a perfect cube — never more than 11 turns. First use takes a moment to warm up.',
     },
@@ -1003,25 +1048,31 @@
   }
   async function applyPattern(p) {
     if (scrambling || animating) return;
-    scrambling = true;
     shareVirgin = false;
-    try {
-      await waitIdle();
-      exitPlayback();
-      clearMsg();
-      if (viewMode === 'net') setView('3d');   // watch the moves happen
-      data[mode].paint = mode === '4' ? C4.solvedState() : C.solvedState();
-      pbState = data[mode].paint;
-      render();
-      await sleep(300);
-      await playSequence(p.alg.split(' '), 110);
-      data[mode].paint = pbState;
-      pbState = null;
-      render();
-      showMsg(`${p.name} — from a solved cube: ${p.alg}`, 'ok');
-    } finally {
-      scrambling = false;
-    }
+    await waitIdle();
+    exitPlayback();
+    clearMsg();
+    if (viewMode === 'net') setView('3d');   // watch the moves happen
+    // a pattern is a build sequence from a solved cube — present it through
+    // the same playback UI as a solution, so the move list is visible,
+    // steppable and copyable instead of just flashing past
+    const moves = p.alg.split(' ');
+    const solved = ENG().solvedState();
+    data[mode].paint = ENG().applyAlg(solved, moves);
+    baseState = solved.slice();
+    solution = {
+      moves,
+      stages: [{
+        name: p.name,
+        desc: 'Built from a solved cube — follow the moves on yours, or step through them here.',
+        start: 0,
+        end: moves.length,
+      }],
+    };
+    moveIndex = 0;
+    enterPlayback();
+    showMsg(`${p.name} — ${moves.length} moves from a solved cube. “Edit cube” keeps the pattern.`, 'ok');
+    pb.play.click();   // and watch it build, like before
   }
 
   btnSolve.addEventListener('click', async () => {
@@ -1044,8 +1095,8 @@
         return;
       }
     }
-    // fast solvers build lookup tables on first use; the 4x4 search always
-    // takes a few seconds — let the UI paint a notice first
+    // fast solvers build lookup tables on first use; the 4x4 search can take
+    // a few seconds (beginner path, cold tables) — let the UI paint a notice first
     const needsWarmup = (method === 'fast' && (mode === '3' || mode === '4' ? !C.K.ready : !C.Pocket.dist)) || mode === '4';
     if (needsWarmup) {
       const msg = mode === '4'
@@ -1091,7 +1142,7 @@
     updateHarderButton();
   });
 
-  // 4×4 fast solutions can be refined by a much deeper (~1 min) search
+  // 4×4 fast solutions can be refined by a deeper (~10-20 s) search
   function updateHarderButton() {
     btnHarder.style.display = mode === '4' && method === 'fast' && typeof Worker !== 'undefined' ? '' : 'none';
   }
@@ -1489,7 +1540,7 @@
     stream: null, raf: 0, stable: 0, lastSig: '', cooldownUntil: 0,
     sampleCanvas: document.createElement('canvas'),
     detectCanvas: document.createElement('canvas'),
-    photo: { img: null, rect: null, drag: null },
+    photo: { img: null, px: null, rect: null, drag: null },
     live: false,
     mirror: false, facing: '',      // preview mirrored? (front camera) / camera facing mode
     track: null, frame: 0,          // auto-detected cube square (sample-canvas coords)
@@ -1559,6 +1610,9 @@
         video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
+      // the scanner may have been closed while the permission prompt was up —
+      // a stream adopted now would keep the camera running with no UI attached
+      if (!scan.active) { for (const t of stream.getTracks()) t.stop(); return; }
       await startLive(stream);
     } catch (e) {
       // no camera / not permitted / embedded frame / insecure context
@@ -1569,6 +1623,12 @@
     scan.stream = stream;
     scanEls.video.srcObject = stream;
     await scanEls.video.play();
+    if (!scan.active) {   // closed while the video was starting up
+      for (const t of stream.getTracks()) t.stop();
+      scan.stream = null;
+      scanEls.video.srcObject = null;
+      return;
+    }
     // front cameras (laptops, selfie cams) get a mirrored preview so the cube
     // moves the way the user moves it; a remembered manual choice wins
     const track = stream.getVideoTracks()[0];
@@ -1639,6 +1699,7 @@
     scan.track = null;
     scan.tracker.reset();
     scan.source = null;
+    scan.photo.px = null;   // release the cached photo pixels
     // a reopened scanner (or the camera-denied card) must not sit on the
     // previous session's frozen grid
     const dctx = scanEls.draw.getContext('2d');
@@ -1712,8 +1773,16 @@
   function updateTrack(fr, n, now) {
     const small = SCAN.downsample2(fr.px);
     const t = scan.track;
-    const prefer = t ? { x: t.cx / 2, y: t.cy / 2 } : { x: small.width / 2, y: small.height / 2 };
-    const det = SCAN.detectFace(small, n, { prefer, limits: SCAN.liveLimits(small.width, small.height) });
+    // acquisition is anchored to the on-screen guide square (mapped into
+    // detector coordinates); once locked, to the track itself, so the cube
+    // may drift or come closer without dropping the lock
+    const g = screenToSample(guideRect(), fr.f);
+    const prefer = t
+      ? { x: t.cx / 2, y: t.cy / 2 }
+      : { x: (g.x + g.size / 2) / 2, y: (g.y + g.size / 2) / 2 };
+    const limits = SCAN.liveLimits(small.width, small.height,
+      { guideSize: g.size / 2, lockedSize: t ? t.size / 2 : 0 });
+    const det = SCAN.detectFace(small, n, { prefer, limits });
     scan.track = scan.tracker.update(det && {
       cx: det.cx * 2, cy: det.cy * 2, size: det.size * 2, angle: det.angle,
       count: det.count, total: det.total, single: det.single,
@@ -1894,7 +1963,7 @@
         statusKind = 'ok';
       } else if (!tracked) {
         state = 'searching';
-        statusText = now - scan.startedAt > 1500 ? '🔍 Looking for the cube — hold it flat, facing the camera' : '🔍 Looking for the cube…';
+        statusText = now - scan.startedAt > 1500 ? '🔍 Looking for the cube — fill the dashed square, flat and straight' : '🔍 Looking for the cube…';
       } else if (gates) {
         state = 'capturing';
         statusText = 'Hold still…';
@@ -2056,6 +2125,7 @@
   }
   function loadPhoto(img) {
     scan.photo.img = img;
+    scan.photo.px = null;   // new photo: the cached ImageData is stale
     scanEls.photoStage.style.display = 'block';
     const L = photoLayout();
     const n = SCAN.gridN(scan.scanMode);
@@ -2091,8 +2161,12 @@
     const f = scanEls.file.files && scanEls.file.files[0];
     if (!f) return;
     const img = new Image();
-    img.onload = () => loadPhoto(img);
-    img.src = URL.createObjectURL(f);
+    const url = URL.createObjectURL(f);
+    // revoke once decoded — otherwise every captured photo's blob stays
+    // reachable for the life of the page (six multi-MB photos per scan)
+    img.onload = () => { URL.revokeObjectURL(url); loadPhoto(img); };
+    img.onerror = () => URL.revokeObjectURL(url);
+    img.src = url;
   });
   function photoLayout() {
     // fit-contain layout of the photo on the full-screen canvas
@@ -2103,15 +2177,20 @@
   }
   function drawPhotoStage() {
     const cv = scanEls.photoCanvas;
-    cv.width = innerWidth; cv.height = innerHeight;
+    if (cv.width !== innerWidth || cv.height !== innerHeight) {
+      cv.width = innerWidth; cv.height = innerHeight;
+      scan.photo.px = null;
+    }
     const ctx = cv.getContext('2d', { willReadFrequently: true });
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, cv.width, cv.height);
     const L = photoLayout();
     ctx.drawImage(scan.photo.img, L.x, L.y, L.w, L.h);
     const n = SCAN.gridN(scan.scanMode);
-    const px = ctx.getImageData(0, 0, cv.width, cv.height);
-    const res = SCAN.sampleGrid(px, scan.photo.rect, n);
+    // the photo pixels don't change while the grid is dragged — cache the
+    // (multi-MB) getImageData instead of re-reading the canvas per pointermove
+    if (!scan.photo.px) scan.photo.px = ctx.getImageData(0, 0, cv.width, cv.height);
+    const res = SCAN.sampleGrid(scan.photo.px, scan.photo.rect, n);
     drawGridSquare(ctx, scan.photo.rect, n, res.cells.map((c) => SCAN.hueClass(c)), '#3ddc84', false);
   }
   scanEls.photoCanvas.addEventListener('pointerdown', (e) => {

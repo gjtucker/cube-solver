@@ -1,3 +1,7 @@
+// CubeSnap — a free in-browser Rubik's cube solver.
+// Copyright (C) 2026 CubeSnap contributors
+// SPDX-License-Identifier: GPL-3.0-or-later (see LICENSE for the full text)
+
 (function(){
 // Phased-reduction solver for the 4x4: a chain of nested move-set
 // restrictions (Thistlethwaite's idea) so later phases structurally cannot
@@ -1346,8 +1350,8 @@ const TPR4 = (() => {
     return out;
   }
 
-  // ---- deep pruning tables (lazy; ~3-5s once, then cached in the worker) ----
-  // ---- edge pruning table: 2-bit direct-indexed, distance mod 3 -------------
+  // ---- deep pruning tables (built lazily, then cached in the worker) ----
+  // Edge pruning table: 2-bit direct-indexed, distance mod 3.
   // The even-permutation rank IS the index, so there is no hashing, no probing
   // and no stored keys -- 239.5M entries at 2 bits = 57 MB flat, which is what
   // makes a depth-9 horizon affordable at all (a keyed hash that deep would
@@ -1485,6 +1489,7 @@ const TPR4 = (() => {
   }
   function edgeUpgradePending() { return edgeFrontier !== null; }
 
+  let cpDist = null; // Uint8Array(70*70*70*2): exact G3 center+parity distances
   function buildCpTable() {
     const { maskT, sliceDouble } = deepStructure();
     cpDist = new Uint8Array(70 * 70 * 70 * 2).fill(255);

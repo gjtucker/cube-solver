@@ -1,3 +1,7 @@
+// CubeSnap — a free in-browser Rubik's cube solver.
+// Copyright (C) 2026 CubeSnap contributors
+// SPDX-License-Identifier: GPL-3.0-or-later (see LICENSE for the full text)
+
 (function(){
 // Camera cube scanner — pure pipeline (DOM-free; the UI layer lives in the page).
 //
@@ -45,13 +49,19 @@ const SCAN = (() => {
 
   // lenient hue-prior classifier (live feedback only)
   // returns one of U(yellow) D(white) F(green) B(blue) R(orange) L(red)
+  // Bands are set for real cameras, not ideal colours: phone white balance
+  // routinely drags yellow toward lime (field-measured yellow tiles at hue
+  // 81–95 under warm indoor light), so yellow runs to 100 — true cube
+  // greens sit at 110+ even under a cast. A warm cast also lifts white's
+  // saturation, so the white cutoff is 0.34, above what warm-cast white
+  // reaches (~0.31) but below any real sticker colour.
   function hueClass(rgb) {
     const { h, s, v } = rgbToHsv(rgb[0], rgb[1], rgb[2]);
     if (v < 0.15) return null;             // too dark: probably not a sticker
-    if (s < 0.28) return 'D';              // white
+    if (s < 0.34) return 'D';              // white
     if (h < 14 || h >= 335) return 'L';    // red
     if (h < 42) return 'R';                // orange
-    if (h < 75) return 'U';                // yellow
+    if (h < 100) return 'U';               // yellow (incl. lime-shifted)
     if (h < 175) return 'F';               // green
     if (h < 275) return 'B';               // blue
     return 'L';                            // magenta-ish -> red
@@ -990,7 +1000,11 @@ const SCAN = (() => {
       refs = captures.map((cap) => featOf(cap[centerCell]));
       refLetters = PROTO_FACES.slice(); // ref j -> letter PROTO_FACES[j]
     } else {
-      // constrained k-means seeded by hue buckets
+      // constrained k-means seeded by hue buckets. (Seeding from the canonical
+      // palette after an exact palette white-balance was tried and A/B-measured
+      // against this — it ties on ordinary casts and loses on extreme blue
+      // ones, because data-derived seeds inherit the scan's actual exposure
+      // while canonical seeds do not. See tests/assign-harness.mjs.)
       const buckets = { U: [], D: [], F: [], B: [], R: [], L: [] };
       for (const s of all) {
         const c = hueClass(s.rgb) || 'D';
@@ -1240,17 +1254,25 @@ const SCAN = (() => {
     return twist % 3 === 0;
   }
 
-  // the live scanner's acquisition allowance, relative to the detector
-  // frame's smaller dimension: the cube must sit near the guide square (or
-  // the current track), be at least ~1/5 of the frame tall, and not be
-  // tilted past ~25° — anything else is background, not the cube.
-  function liveLimits(w, h) {
+  // The live scanner's acquisition allowance. Deliberately tight: the user
+  // is shown a guide square, so a legitimate cube is close to its centre,
+  // within ±20% of its size, and nearly upright — anything else is
+  // background, and refusing it outright beats letting a lattice-like wall
+  // win a fit. opts.guideSize is the on-screen guide square mapped into
+  // detector coordinates (default ~0.55 of the frame's short side);
+  // opts.lockedSize is the current track's size when locked, which widens
+  // the size band and tilt so a cube may drift/approach once acquired
+  // without losing the lock (position drift is already allowed because
+  // {maxDist} is measured from `prefer` = the current track).
+  function liveLimits(w, h, opts) {
     const md = Math.min(w, h);
+    const nominal = Math.min(md * 0.8, Math.max(md * 0.3, (opts && opts.guideSize) || md * 0.55));
+    const locked = opts && opts.lockedSize;
     return {
-      maxDist: md * 0.42,
-      minSize: md * 0.2,
-      maxSize: md * 1.15,
-      maxTilt: (25 * Math.PI) / 180,
+      maxDist: nominal * 0.25,
+      minSize: locked ? Math.min(nominal * 0.8, locked * 0.7) : nominal * 0.8,
+      maxSize: locked ? Math.max(nominal * 1.2, locked * 1.3) : nominal * 1.2,
+      maxTilt: ((locked ? 20 : 15) * Math.PI) / 180,
     };
   }
 

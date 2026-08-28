@@ -1,3 +1,8 @@
+node_modules/
+package.json
+package-lock.json
+shots-*/
+
 # Corpus working files (tools/cube-corpus). Regenerable, large, or licence-
 # encumbered — the committed part of the corpus is corpus/faces/ (rectified
 # crops, CC0/public-domain only), corpus/faces.json and corpus/ATTRIBUTION.md.

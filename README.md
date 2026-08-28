@@ -8,7 +8,7 @@ Scan your cube with the camera and follow a step-by-step 3D solution, right in t
 
 ## Features
 
-- **Camera scanning** — point your camera at each face and the scanner locks on automatically: position, size and tilt. Works with stickered cubes *and* gapless stickerless cubes (it reads the corner notches where tiles meet, since those cubes have no seams). Auto-captures only when it's genuinely sure; manual capture and undo are always available.
+- **Camera scanning** — roughly fill the on-screen guide square with each face and the scanner locks on automatically: position, size and tilt (the tight acquisition window is what keeps busy backgrounds from ever stealing the lock). Works with stickered cubes *and* gapless stickerless cubes (it reads the corner notches where tiles meet, since those cubes have no seams). Auto-captures only when it's genuinely sure; manual capture and undo are always available.
 - **Four puzzles** — 3×3, 4×4, 2×2 and Mirror 2×2.
 - **Two solving styles** — *Step-by-step* teaches the classic layer-by-layer method in friendly stages, each with a "Why this works" explainer of the underlying idea (commutators, twist parity, 4×4 parities); *Fewest moves* finds short solutions (two-phase for 3×3; the 4×4 reduces phase-by-phase and finishes with exact IDA* over TPR-style pruning tables — ~46 moves in about a second, ~44 with "Search harder").
 - **Fast 4×4 solving in the browser** — 228 KB of compressed lookup tables load in ~50 ms. The big exact-search pruning table (57 MB, 239.5M entries at 2 bits) is built on-device inside each Web Worker, prewarmed when you enter 4×4 mode: it is ready to solve with after ~1.5 s, then deepens itself in the background for another ~9 s without ever blocking a solve. A fewest-moves solve takes about a second at ~46 moves, or ~44 with "Search harder", without freezing the page.
@@ -47,6 +47,7 @@ Both core pipelines have measurement harnesses with pass/fail targets:
 ```sh
 node tests/scan-harness.mjs --seed 1     # scanner: lock rate / bad fits / false locks on synthetic scenes
 node tests/scan-harness.mjs --corpus     # scanner: the same, on rectified photos of real cubes
+node tests/hueclass-field.mjs            # colour classifier vs field-measured phone-camera pixels
 node tests/solve4-harness.mjs            # 4×4 solver: move count + wall time
 node tests/solve4-harness.mjs --hard     # the "Search harder" deep mode
 node tests/browser-worker-test.mjs       # the real-browser worker path (needs playwright)
@@ -72,6 +73,10 @@ CubeSnap's solvers stand on decades of public cube theory. **No third-party code
 - **[Chen Shuang (cs0x7f)](https://github.com/cs0x7f/TPR-4x4x4-Solver)** — the Three-Phase-Reduction solver that generates official WCA 4×4 scrambles. CubeSnap's deep 4×4 engine follows its design; see the note below.
 - **Charles Tsai** — the 8-step 4×4 method that TPR builds on.
 - **The [speedsolving.com](https://www.speedsolving.com/) community** — the layer-by-layer method taught in *Step-by-step*, and the 4×4 OLL/PLL parity algorithms in `cube4.js`.
+- **David Singmaster** — the U/D/F/B/R/L face-turn notation used throughout the app and this codebase.
+- **The cubing community's pattern folklore** — checkerboard, cube-in-cube, superflip and the other classics in the pattern library are traditional algorithms of unknown or collective authorship (superflip's fame dates to Michael Reid's 1995 proof that it needs 20 moves); each one is re-verified against the engine before it is shown.
+
+The camera scanner (`scan.js`) was built for this project from standard computer-vision building blocks (blob segmentation, lattice fitting, HSV classification) without reference to any existing scanner implementation.
 
 ### On the 4×4 deep engine and TPR
 
@@ -84,7 +89,7 @@ CubeSnap's solvers stand on decades of public cube theory. **No third-party code
 | 3×3 finish | min2phase | CubeSnap's own two-phase solver (`cube.js`) |
 | Orientation | one symmetry frame, rotations stripped at output | three color-axis rotations raced across Web Workers |
 
-Copyright covers the expression of a program rather than the algorithm it implements, which is why this project is MIT-licensed rather than GPL. TPR remains the more efficient solver — it reaches ~44.4 moves in ~250 ms against our ~44.1 in ~12 s, on a fraction of the memory — and it is the reference this one was measured against throughout.
+Copyright covers the expression of a program rather than the algorithm it implements, so an independent reimplementation like this one could carry a permissive license. This project uses the GPL anyway: the deep engine's design owes enough to TPR that the conservative choice is to license under the same terms as the work that inspired it, so there is no doubt in any reading. TPR remains the more efficient solver — it reaches ~44.4 moves in ~250 ms against our ~44.1 in ~12 s, on a fraction of the memory — and it is the reference this one was measured against throughout.
 
 ### Assets and tooling
 
@@ -93,4 +98,6 @@ Copyright covers the expression of a program rather than the algorithm it implem
 
 ## License
 
-[MIT](LICENSE) © CubeSnap contributors.
+[GPL-3.0-or-later](LICENSE) © 2026 CubeSnap contributors.
+
+CubeSnap is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. It is distributed in the hope that it will be useful, but **without any warranty** — see the [LICENSE](LICENSE) file for details. Since the site is served unbuilt, the deployed files *are* the complete corresponding source.
