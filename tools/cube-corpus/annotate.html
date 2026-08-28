@@ -1,0 +1,80 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>cube-corpus annotator</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/tools/cube-corpus/annotate.css">
+<body>
+<header>
+  <strong>cube-corpus</strong>
+  <span id="progress" class="muted">loading…</span>
+  <span class="spacer"></span>
+  <span class="muted kbd-help">
+    <b>←/→</b> image · <b>2/3/4</b> size · <b>R</b> re-propose · <b>Enter</b> save · <b>X</b> skip
+  </span>
+</header>
+
+<main>
+  <section class="pane">
+    <div class="stagewrap">
+      <canvas id="stage"></canvas>
+    </div>
+    <p class="meta" id="meta"></p>
+  </section>
+
+  <aside class="pane side">
+    <div class="row">
+      <span class="label">Face</span>
+      <canvas id="preview" width="192" height="192"></canvas>
+    </div>
+    <p class="muted small" id="confidence"></p>
+
+    <div class="row">
+      <span class="label">Size</span>
+      <div class="seg" id="nSeg">
+        <button data-n="2">2×2</button><button data-n="3" class="on">3×3</button><button data-n="4">4×4</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="label">Style</span>
+      <div class="seg" id="styleSeg">
+        <button data-style="stickered" class="on">stickered</button>
+        <button data-style="gapless">gapless</button>
+        <button data-style="mirror">mirror</button>
+      </div>
+    </div>
+
+    <div class="row top">
+      <span class="label">Tags</span>
+      <div class="tags" id="tags">
+        <label><input type="checkbox" value="logo"> logo on a tile</label>
+        <label><input type="checkbox" value="glossy"> glossy / reflective</label>
+        <label><input type="checkbox" value="glare"> blown highlight</label>
+        <label><input type="checkbox" value="blur"> motion blur</label>
+        <label><input type="checkbox" value="in-hand"> held in hand</label>
+        <label><input type="checkbox" value="offscheme"> non-standard colours</label>
+        <label><input type="checkbox" value="worn"> worn / peeling stickers</label>
+        <label><input type="checkbox" value="lowlight"> low light</label>
+      </div>
+    </div>
+
+    <div class="row top">
+      <span class="label">Notes</span>
+      <textarea id="notes" rows="2" placeholder="anything the tags miss"></textarea>
+    </div>
+
+    <p class="muted small">Drag the four handles onto the face corners. Click a tile in the
+      preview to correct its colour (<b>?</b> means unknown &mdash; a logo, a reflection, or
+      a colour outside the six).</p>
+
+    <div class="actions">
+      <button id="prev">‹ Prev</button>
+      <button id="repropose">Re-propose</button>
+      <button id="skip">Skip</button>
+      <button id="save" class="primary">Save &amp; next ›</button>
+    </div>
+    <p id="status" class="status"></p>
+  </aside>
+</main>
+
+<script type="module" src="/tools/cube-corpus/annotate.js"></script>

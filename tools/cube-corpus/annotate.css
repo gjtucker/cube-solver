@@ -1,0 +1,32 @@
+:root { --bg:#14151a; --panel:#1c1e26; --line:#2e3140; --fg:#e7e9f0; --muted:#8b90a4; --accent:#5b8cff; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 ui-sans-serif,system-ui,-apple-system,sans-serif; }
+header { display:flex; gap:12px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); }
+.spacer { flex:1; }
+.muted { color:var(--muted); }
+.small { font-size:12px; }
+.kbd-help b { color:var(--fg); font-weight:600; }
+main { display:grid; grid-template-columns:1fr 320px; gap:16px; padding:16px; align-items:start; }
+@media (max-width:900px) { main { grid-template-columns:1fr; } }
+.pane { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
+.stagewrap { display:flex; justify-content:center; }
+#stage { max-width:100%; border-radius:6px; cursor:crosshair; touch-action:none; }
+.meta { margin:10px 0 0; font-size:12px; color:var(--muted); word-break:break-word; }
+.meta a { color:var(--accent); }
+.side { display:flex; flex-direction:column; gap:12px; }
+.row { display:flex; gap:10px; align-items:center; }
+.row.top { align-items:flex-start; }
+.label { width:46px; flex:none; color:var(--muted); font-size:12px; padding-top:2px; }
+#preview { border-radius:6px; background:#000; image-rendering:pixelated; cursor:pointer; width:192px; height:192px; }
+.seg { display:flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+.seg button { background:transparent; border:0; color:var(--muted); padding:5px 10px; cursor:pointer; font:inherit; font-size:12px; }
+.seg button.on { background:var(--accent); color:#fff; }
+.tags { display:grid; grid-template-columns:1fr 1fr; gap:2px 8px; font-size:12px; }
+.tags label { display:flex; gap:5px; align-items:center; cursor:pointer; }
+textarea { flex:1; background:#111219; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px; font:inherit; font-size:12px; resize:vertical; }
+.actions { display:flex; gap:6px; flex-wrap:wrap; }
+.actions button { flex:1; background:#262935; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:8px; cursor:pointer; font:inherit; font-size:13px; }
+.actions button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; flex-basis:100%; }
+.actions button:hover { border-color:var(--accent); }
+.status { margin:0; min-height:16px; font-size:12px; color:var(--muted); }
+.status.err { color:#ff8080; }
