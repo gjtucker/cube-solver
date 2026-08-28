@@ -40,16 +40,24 @@ Everything is plain scripts — no bundler, no dependencies. The interesting par
 | `cube4.js`, `tpr4.js`, `worker4.js` | 4×4 engine and phased-reduction solver: beam-portfolio fast path plus a deep engine (exact phase 3 by IDA* over an edge-pairing permutation table, parity solved structurally) racing colour-axis rotations across workers |
 | `tables/` | Pre-built solver tables (nibble-packed, gzipped); regenerate with `tools/gen-tables.mjs` |
 | `app.js` | UI: painting, 3D rendering, playback, persistence, scanner overlay |
+| `tools/cube-corpus/` | Pipeline that turns openly-licensed cube photos into labelled scanner test scenes — real logos, gloss and worn stickers, which the synthetic harness cannot draw |
 
 Both core pipelines have measurement harnesses with pass/fail targets:
 
 ```sh
 node tests/scan-harness.mjs --seed 1     # scanner: lock rate / bad fits / false locks on synthetic scenes
+node tests/scan-harness.mjs --corpus     # scanner: the same, on rectified photos of real cubes
 node tests/hueclass-field.mjs            # colour classifier vs field-measured phone-camera pixels
 node tests/solve4-harness.mjs            # 4×4 solver: move count + wall time
 node tests/solve4-harness.mjs --hard     # the "Search harder" deep mode
 node tests/browser-worker-test.mjs       # the real-browser worker path (needs playwright)
 ```
+
+`--corpus` needs a corpus first; see [`tools/cube-corpus/`](tools/cube-corpus/README.md),
+which finds openly-licensed cube photographs, rectifies each face to a canonical
+crop, and lets the harness composite those real textures into scenes with exact
+ground truth. It scores the colour read as well as the fit, because a logo
+printed on a centre cap breaks the read long before it breaks the geometry.
 
 ## Themes
 

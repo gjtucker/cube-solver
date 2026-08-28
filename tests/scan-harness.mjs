@@ -13,6 +13,15 @@
 //   node tests/scan-harness.mjs --json     # machine-readable summary
 //   node tests/scan-harness.mjs --seed 7   # different scenario set
 //   node tests/scan-harness.mjs --frames 4 # shorter sequences (faster, default 8)
+//   node tests/scan-harness.mjs --corpus  # real photographed faces, not synthetic
+//
+// --corpus swaps the synthetic face for a rectified PHOTOGRAPH of a real cube
+// from corpus/ (see tools/cube-corpus/), keeping the scene geometry — and so
+// the ground truth — exactly as above. It is a separate report with its own
+// targets, and it also scores the COLOUR READ, because a logo printed on a
+// centre cap breaks the read long before it breaks the fit. Build the corpus
+// with tools/cube-corpus/{search,fetch,serve}.mjs; without one this mode
+// explains how to make it and exits 0 rather than failing the suite.
 //
 // A detection counts as a HIT when the reported square matches ground truth:
 //   centre error < 15% of the true size, size within ±20%, angle within 7°
@@ -35,6 +44,7 @@ import { createRequire } from 'node:module';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const SCAN = createRequire(import.meta.url)(join(root, 'scan.js'));
+import { loadCorpus, makeCorpusScenarios, renderCorpusFrame, scoreColors } from './corpus-scenes.mjs';
 
 // ---------- tiny seeded PRNG (mulberry32) so runs are reproducible ----------
 function rng(seed) {
@@ -86,6 +96,33 @@ const BACKGROUNDS = {
     return [40 + (h % 160), 40 + ((h * 7) % 160), 40 + ((h * 13) % 160)];
   },
 };
+
+// realistic desk clutter: scattered objects of varied size and colour over a
+// wooden surface. Module-level so the --corpus scenes stand on exactly the
+// same backgrounds as the synthetic ones, and only the face differs.
+function clutterRects(rand) {
+  const rects = [];
+  for (let k = 0; k < 14; k++) {
+    rects.push({
+      x: rand() * 340 - 20, y: rand() * 190 - 10,
+      w: 10 + rand() * 70, h: 8 + rand() * 55,
+      c: [30 + rand() * 190, 30 + rand() * 190, 30 + rand() * 190],
+    });
+  }
+  return rects;
+}
+
+// background colour under a scene pixel, clutter included
+export function sampleBackground(x, y, sc) {
+  if (sc.background === 'cluttered') {
+    let rgbv = BACKGROUNDS.wood(x, y);
+    for (const r of sc.clutterRects) {
+      if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) rgbv = r.c;
+    }
+    return rgbv;
+  }
+  return (BACKGROUNDS[sc.background] || (() => [96, 96, 96]))(x, y);
+}
 
 // ground truth + scene description -> RGBA frame
 function renderFrame(sc) {
@@ -212,17 +249,7 @@ function makeScenarios(seed) {
   const scales = [0.25, 0.32, 0.42, 0.55, 0.7];
   const angles = [0, 6, 12, 18, 23];
   const backgrounds = ['gray', 'dark', 'wood', 'cluttered', 'mosaic', 'tilewall'];
-  const clutterScene = () => {
-    const rects = [];
-    for (let k = 0; k < 14; k++) {
-      rects.push({
-        x: rand() * 340 - 20, y: rand() * 190 - 10,
-        w: 10 + rand() * 70, h: 8 + rand() * 55,
-        c: [30 + rand() * 190, 30 + rand() * 190, 30 + rand() * 190],
-      });
-    }
-    return rects;
-  };
+  const clutterScene = () => clutterRects(rand);
   for (const n of [3, 4, 2]) {
     for (const scale of scales) {
       for (const angleDeg of angles) {
@@ -332,6 +359,10 @@ const seedArg = args.indexOf('--seed');
 const seed = seedArg >= 0 ? +args[seedArg + 1] : 1;
 const framesArg = args.indexOf('--frames');
 const FRAMES = framesArg >= 0 ? +args[framesArg + 1] : 8;
+
+if (args.includes('--corpus')) {
+  runCorpus();
+} else {
 
 const scenarios = makeScenarios(seed);
 const cubeScen = scenarios.filter((s) => s.hasCube && !s.oob);
@@ -495,3 +526,115 @@ if (asJson) {
   console.log(summary.pass ? 'PASS' : 'FAIL');
 }
 process.exit(summary.pass ? 0 : 1);
+}
+
+// ---------- corpus mode ----------
+// Same detector, same tracker, same scoring; real photographed faces instead
+// of drawn ones. Reported separately from the synthetic run because the two
+// answer different questions — synthetic asks whether the geometry is right
+// across the whole parameter space, corpus asks whether real cubes, with the
+// branding and finishes that ship on them, survive that geometry.
+function runCorpus() {
+  const corpus = loadCorpus();
+  if (!corpus || !corpus.faces.length) {
+    console.log('no corpus yet — nothing to measure.\n');
+    console.log('Build one (see tools/cube-corpus/README.md):');
+    console.log('  node tools/cube-corpus/search.mjs      # find openly-licensed cube photos');
+    console.log('  node tools/cube-corpus/fetch.mjs       # download them');
+    console.log('  node tools/cube-corpus/serve.mjs       # label faces in the browser');
+    console.log('  node tests/scan-harness.mjs --corpus   # then run this again');
+    process.exit(0);
+  }
+
+  const scen = makeCorpusScenarios(seed, corpus.faces, W, H);
+  scen.forEach((sc, i) => { if (sc.clutterNeeded) sc.clutterRects = clutterRects(rng(seed + i)); });
+
+  const res = [];
+  const t0 = Date.now();
+  for (const sc of scen) {
+    const tracker = SCAN.createTracker();
+    let track = null, lastFrame = null;
+    for (let f = 0; f < FRAMES; f++) {
+      lastFrame = renderCorpusFrame(sc, sampleBackground, W, H);
+      const prefer = track ? { x: track.cx, y: track.cy } : { x: W / 2, y: H / 2 };
+      const det = SCAN.detectFace(lastFrame, sc.n, { prefer, limits: SCAN.liveLimits(W, H) });
+      track = tracker.update(det, f * 66);
+    }
+    const g = score(sc, track);
+    res.push({ sc, det: track, s: g, col: g.hit ? scoreColors(SCAN, lastFrame, track, sc) : null });
+  }
+  const ms = Date.now() - t0;
+
+  const hits = res.filter((r) => r.s.hit);
+  const badFits = res.filter((r) => r.s.detected && !r.s.hit);
+  const cols = hits.map((r) => r.col).filter(Boolean);
+  const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+  const median = (a) => (a.length ? a.slice().sort((x, y) => x - y)[a.length >> 1] : null);
+  const summary = {
+    mode: 'corpus', seed, faces: corpus.faces.length, demoFaces: corpus.faces.filter((f) => f.demo).length, scenes: scen.length,
+    lockRate: hits.length / res.length,
+    badFitRate: badFits.length / res.length,
+    tileAccuracy: mean(cols.map((c) => c.tileAccuracy).filter((v) => v !== null)),
+    medianSeparability: median(cols.map((c) => c.separability).filter((v) => v !== null)),
+    unseparableRate: cols.length ? cols.filter((c) => c.separability !== null && c.separability <= 1).length / cols.length : null,
+    msPerFrame: +(ms / (scen.length * FRAMES)).toFixed(1),
+  };
+
+  if (asJson) { console.log(JSON.stringify(summary, null, 2)); process.exit(0); }
+
+  const pct = (x) => (x === null ? 'n/a' : (100 * x).toFixed(1) + '%');
+  const demo = corpus.faces.filter((f) => f.demo).length;
+  if (demo) {
+    console.log(`!! ${demo} of ${corpus.faces.length} faces are DRAWN demo fixtures, not photographs.`);
+    console.log('   These numbers exercise the pipeline; they do not measure real cubes.');
+    console.log('   Build a real corpus with tools/cube-corpus/, then: node tools/cube-corpus/demo-corpus.mjs --clean\n');
+  }
+  console.log(`CORPUS: ${corpus.faces.length} ${demo ? 'demo' : 'photographed'} faces x ${scen.length / corpus.faces.length} scenes = ${scen.length} sequences  (${summary.msPerFrame} ms/frame)`);
+  console.log(`LOCK RATE:   ${pct(summary.lockRate)}   BAD FITS: ${pct(summary.badFitRate)} (${badFits.length}/${res.length})`);
+  console.log(`COLOUR READ: ${pct(summary.tileAccuracy)} of tiles read correctly on locked faces`);
+  console.log(`             median separability ${summary.medianSeparability === null ? 'n/a' : summary.medianSeparability.toFixed(2)}`
+    + ` · ${pct(summary.unseparableRate)} of locks are unseparable (\u2264 1: two colours closer than one colour is to itself)`);
+
+  // The breakdowns are the point of the corpus: they say WHICH real-world
+  // property costs the scanner, which a synthetic sweep cannot.
+  const buckets = (keyFn) => {
+    const m = new Map();
+    for (const r of res) {
+      for (const k of [].concat(keyFn(r.sc))) {
+        if (!m.has(k)) m.set(k, { total: 0, hit: 0, tiles: [] });
+        const b = m.get(k);
+        b.total++;
+        if (r.s.hit) { b.hit++; if (r.col && r.col.tileAccuracy !== null) b.tiles.push(r.col.tileAccuracy); }
+      }
+    }
+    return [...m.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0]), undefined, { numeric: true }));
+  };
+  const show = (name, keyFn) => {
+    const line = buckets(keyFn)
+      .map(([k, b]) => `${k}: ${pct(b.hit / b.total)} lock/${pct(mean(b.tiles))} read (n=${b.total})`)
+      .join('   ');
+    if (line) console.log(`  ${name.padEnd(12)} ${line}`);
+  };
+  show('by tag', (sc) => (sc.tags.length ? sc.tags : ['(untagged)']));
+  show('by style', (sc) => sc.style);
+  show('by cube size', (sc) => sc.n + 'x' + sc.n);
+  show('by scale', (sc) => sc.scale);
+  show('by tilt', (sc) => sc.angleDeg + '\u00b0');
+  show('by backgrnd', (sc) => sc.background);
+
+  // Worst faces by name: the shortlist to open and look at.
+  const perFace = new Map();
+  for (const r of res) {
+    const k = r.sc.corpus.id;
+    if (!perFace.has(k)) perFace.set(k, { total: 0, hit: 0, rec: r.sc.corpus });
+    const b = perFace.get(k);
+    b.total++; if (r.s.hit) b.hit++;
+  }
+  const worst = [...perFace.values()].sort((a, b) => a.hit / a.total - b.hit / b.total).slice(0, 8);
+  console.log('  hardest faces:');
+  for (const f of worst) {
+    console.log(`    ${pct(f.hit / f.total).padStart(6)}  ${f.rec.face}  ${f.rec.style}`
+      + `${f.rec.tags?.length ? ' [' + f.rec.tags.join(',') + ']' : ''}${f.rec.notes ? '  \u2014 ' + f.rec.notes : ''}`);
+  }
+  process.exit(0);
+}
