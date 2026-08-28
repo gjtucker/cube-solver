@@ -167,7 +167,30 @@ const TPR4 = (() => {
     if (!valid) throw new Error('phase-2 move leaks side centers: ' + MOVES36[mi]);
     sidePerm[mi] = p16;
   }
-  function rank16(mask) { return rankMask(mask, 16, 8); }
+  // 64K lookup (128 KB). rank16 runs on every node of the joint phase-2 head
+  // search, where the generic rankMask loop costs sixteen CNK indirections.
+  const RANK16_T = new Uint16Array(65536);
+  for (let m = 0; m < 65536; m++) RANK16_T[m] = rankMask(m, 16, 8);
+  function rank16(mask) { return RANK16_T[mask]; }
+  // byte-wise transition tables for the 16-slot side mask, replacing a
+  // 16-iteration bit loop with two lookups
+  const sideMaskT = {};
+  for (const mi of SET28) {
+    const perm = sidePerm[mi];
+    const lo = new Uint16Array(256), hi = new Uint16Array(256);
+    for (let b = 0; b < 256; b++) {
+      let a = 0, c = 0;
+      for (let i = 0; i < 8; i++) {
+        if (b & (1 << i)) { a |= 1 << perm[i]; c |= 1 << perm[i + 8]; }
+      }
+      lo[b] = a; hi[b] = c;
+    }
+    sideMaskT[mi] = [lo, hi];
+  }
+  const applySide16 = (mi, m16) => {
+    const T = sideMaskT[mi];
+    return T[0][m16 & 255] | T[1][m16 >> 8];
+  };
   // wing-permutation parity flips exactly on single-slice quarter turns
   const MOVE_ODD = MOVES36.map((m) => (m[0] >= 'a' && m[0] <= 'z' && m[1] !== '2') ? 1 : 0);
   function buildPhase2() {
@@ -1166,6 +1189,19 @@ const TPR4 = (() => {
   const G3 = SET24.filter((mi) => !RL_QUARTERS.includes(mi));
   const AXIS_OF_FACE = { U: 0, u: 0, d: 0, D: 0, R: 1, r: 1, l: 1, L: 1, F: 2, f: 2, b: 2, B: 2 };
   const LAYER_OF_FACE = { U: 0, u: 1, d: 2, D: 3, R: 0, r: 1, l: 2, L: 3, F: 0, f: 1, b: 2, B: 3 };
+  // same facts indexed by move number: the search loops used to pull
+  // MOVES36[mi][0] and hash it through the objects above on every node
+  const MOVE_AXIS = new Uint8Array(36), MOVE_LAYER = new Uint8Array(36), MOVE_FACE_ID = new Uint8Array(36);
+  {
+    const faceIds = {};
+    let next = 0;
+    MOVES36.forEach((m, i) => {
+      MOVE_AXIS[i] = AXIS_OF_FACE[m[0]];
+      MOVE_LAYER[i] = LAYER_OF_FACE[m[0]];
+      if (faceIds[m[0]] === undefined) faceIds[m[0]] = next++;
+      MOVE_FACE_ID[i] = faceIds[m[0]];
+    });
+  }
 
   const POPC12 = new Uint8Array(4096);
   for (let i = 1; i < 4096; i++) POPC12[i] = POPC12[i >> 1] + (i & 1);
@@ -1532,7 +1568,7 @@ const TPR4 = (() => {
   // the halves, at most 4 positions each, so >= ceil(defects/4) such moves
   // remain while any dedge has both wings in one half
   function defectBound(w) {
-    const { posA } = deepStructure();
+    const posA = (DEEP || deepStructure()).posA;
     let cnt = 0, seen = 0;
     for (let d = 0; d < 12; d++) {
       const dd = WING_DEDGE[w[posA[d]]];
@@ -1576,19 +1612,18 @@ const TPR4 = (() => {
       const w = wStack[g], nw = wStack[g + 1];
       for (const mi of SET24) {
         if (budget && --budget.n < 0) return false;
-        const tok = MOVES36[mi];
-        if (tok[0] === lastLayer) continue;
+        if (MOVE_FACE_ID[mi] === lastLayer) continue;
         const wp = wingPerm[mi], T = maskT[mi];
         for (let p = 0; p < NW; p++) nw[wp[p]] = w[p];
         const na0 = T[0][a0], na1 = T[1][a1], na2 = T[2][a2], ncp = cpar ^ cparFlip[mi];
         pathIdx.push(mi);
         if (feasible(nw, na0, na1, na2, ncp)) return true;
-        if (togo > 1 && dfs(g + 1, na0, na1, na2, ncp, togo - 1, tok[0])) return true;
+        if (togo > 1 && dfs(g + 1, na0, na1, na2, ncp, togo - 1, MOVE_FACE_ID[mi])) return true;
         pathIdx.pop();
       }
       return false;
     };
-    if (!dfs(0, pre.m0[0], pre.m0[1], pre.m0[2], pre.cpar0, depth, '')) return null;
+    if (!dfs(0, pre.m0[0], pre.m0[1], pre.m0[2], pre.cpar0, depth, 255)) return null;
     return pathIdx.map((mi) => MOVES36[mi]);
   }
 
@@ -1664,13 +1699,10 @@ const TPR4 = (() => {
         const w = wStack[g], nw = wStack[g + 1];
         for (const mi of SET28) {
           if (nodes > nodeCap || found >= perPrepCap || out.length >= headCap * 2) return;
-          const tok = MOVES36[mi];
-          const ax = AXIS_OF_FACE[tok[0]], ly = LAYER_OF_FACE[tok[0]];
+          const ax = MOVE_AXIS[mi], ly = MOVE_LAYER[mi];
           if (ax === lastAxis && ly <= lastLayer) continue; // canonical order
           nodes++;
-          const perm = sidePerm[mi];
-          let nm16 = 0;
-          for (let i = 0; i < 16; i++) if (m16 & (1 << i)) nm16 |= 1 << perm[i];
+          const nm16 = applySide16(mi, m16);
           const npar = wpar ^ MOVE_ODD[mi];
           const nd = dist2[rank16(nm16) * 2 + npar];
           if (nd > togo - 1) continue;
@@ -1844,9 +1876,10 @@ const TPR4 = (() => {
     // feasibility search (shortest when it lands within its node budget) and
     // the classic heads + bridge sweep (cheap, and rescues the scrambles the
     // joint search prices too high)
-    const cands = deepHeads(state, scheme, opts).map((h) => ({ head: h.moves, br: [], s8: h.s8, total: h.total, lb: h.lb }));
+    const cands = (opts.skipJointHeads ? [] : deepHeads(state, scheme, opts))
+      .map((h) => ({ head: h.moves, br: [], s8: h.s8, total: h.total, lb: h.lb }));
     const seenCand = new Set(cands.map((c) => c.s8.join(',')));
-    {
+    if (!opts.skipBridge) {
       const heads = phaseHeads(state, scheme, {
         p1cap: opts.p1cap || 36, p1slack: opts.p1slack === undefined ? 1 : opts.p1slack,
         p2cap: opts.p2cap || 4, headCap: opts.headCap || 12,
