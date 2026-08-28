@@ -313,12 +313,14 @@ const SCAN = (() => {
       let mx = 0, my = 0;
       for (const p of pts) { mx += p[0]; my += p[1]; }
       mx /= m; my /= m;
+      /** @type {Array<{cx:number, cy:number, x:number, y:number, size:number, angle:number,
+          count:number, total:number, score?:number, evidence?:number, st?:object}>} */
       const allFits = [];
       for (const startPitch of tries) {
         let pitch = startPitch;
         let angle = latticeAngle(pts, pitch);
         if (angle === null) continue;
-        let ca, sa, rot, rs;
+        let ca = 1, sa = 0, rot, rs;
         const setAngle = (a) => {
           angle = a; ca = Math.cos(a); sa = Math.sin(a);
           rot = pts.map(([x, y]) => {
@@ -337,7 +339,8 @@ const SCAN = (() => {
           cells = rot.map((r) => [(r[0] - rs[0]) / pitch, (r[1] - rs[1]) / pitch]);
           inl = cells.map((c) => Math.abs(c[0] - Math.round(c[0])) < 0.3 && Math.abs(c[1] - Math.round(c[1])) < 0.3);
         };
-        let cells = null, inl = null;
+        /** @type {number[][]} */ let cells = [];
+        /** @type {boolean[]} */ let inl = [];
         for (let iter = 0; iter < 3; iter++) {
           reproject();
           // refine the pitch: least-squares slope of rotated coords vs integer cells, both axes

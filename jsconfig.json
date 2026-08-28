@@ -1,0 +1,26 @@
+{
+  // Dev-time type checking only — nothing is compiled and nothing ships.
+  // Run:  npx tsc --noEmit    (or just `tsc --noEmit` if installed)
+  // The shipped files stay plain JS; types live in JSDoc comments and the
+  // cross-file globals are declared in types.d.ts.
+  "compilerOptions": {
+    "checkJs": true,
+    "noEmit": true,
+    "target": "es2022",
+    "lib": ["es2022", "dom", "dom.iterable"],
+    "strict": false,
+    "noImplicitThis": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "types.d.ts",
+    "app.js",
+    "scan.js",
+    "cube.js",
+    "cube4.js",
+    "tpr4.js",
+    "tables.js",
+    "worker4.js",
+    "sw.js"
+  ]
+}

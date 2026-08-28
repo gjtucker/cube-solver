@@ -41,7 +41,7 @@ const C4 = (() => {
   const MOVE_PERM = {};
   for (const f of FACES) {
     const axis = FACE_GEO[f].n;
-    for (const [token, lo, hi] of [[f, 1, 3], [f.toLowerCase(), 0, 1]]) {
+    for (const [token, lo, hi] of /** @type {[string, number, number][]} */ ([[f, 1, 3], [f.toLowerCase(), 0, 1]])) {
       const perm = STICKERS.map((_, i) => i);
       STICKERS.forEach((s, i) => {
         const d = vdot(s.pos, axis);

@@ -8,6 +8,7 @@
 // off the main thread. The shortest reduction across workers wins.
 importScripts('cube.js', 'cube4.js', 'tpr4.js');
 
+(() => {
 const C4 = globalThis.Cube4;
 const TPR4 = globalThis.TPR4;
 
@@ -54,3 +55,4 @@ onmessage = (e) => {
     postMessage({ id: m.id, error: String(err && err.message || err) });
   }
 };
+})();

@@ -4,6 +4,8 @@
 
 (() => {
   const C = window.Cube;
+  /** @param {string} sel @returns {NodeListOf<HTMLElement>} */
+  const $$ = (sel) => document.querySelectorAll(sel);
   const C4 = window.Cube4;
   // ---- 4×4 fast solver: shipped tables + parallel search workers ----
   // The table bundle is fetched once in the background (skipping the ~10s
@@ -271,7 +273,7 @@
   let mode = '3';
   let method = 'beginner'; // beginner | fast
   let selColor = 'U';   // for color modes
-  let selShape = 3;     // for mirror mode
+  /** @type {number|'X'} */ let selShape = 3;     // for mirror mode
   let animating = false;
   let solution = null;
   let baseState = null;   // colored state at solve time (virtual for mirror)
@@ -513,7 +515,7 @@
       fEl.className = 'netface';
       fEl.style.gridColumn = NET_COL[f];
       fEl.style.gridRow = NET_ROW[f];
-      fEl.style.setProperty('--n', n);
+      fEl.style.setProperty('--n', String(n));
       for (let r = 0; r < n; r++) {
         for (let c = 0; c < n; c++) {
           const idx = mode === '2'
@@ -569,7 +571,7 @@
   // panel's real height instead of guessing in vh (it varies with the hint
   // line, paddings, and 3D-vs-net view)
   function updateStickyOffsets() {
-    const stage = document.querySelector('.stage3d');
+    const stage = /** @type {HTMLElement|null} */ (document.querySelector('.stage3d'));
     if (stage) document.documentElement.style.setProperty('--stickyTop', (stage.offsetHeight + 10) + 'px');
   }
   // the panel's height shifts with fonts loading, hint wrapping, and the
@@ -811,6 +813,7 @@
 
   // ---------- palette ----------
   const paletteEl = document.getElementById('palette');
+  /** @type {Array<{code: number|'X', w?: number, h?: number, label: string}>} */
   const SHAPES = [
     { code: 0, w: 14, h: 14, label: 'small' },
     { code: 1, w: 26, h: 14, label: 'wide' },
@@ -825,7 +828,7 @@
       for (const sh of SHAPES) {
         const b = document.createElement('div');
         b.className = 'swatch' + (sh.code === selShape ? ' sel' : '');
-        b.dataset.shape = sh.code;
+        b.dataset.shape = String(sh.code);
         if (sh.code !== 'X') {
           const r = document.createElement('div');
           r.className = 'srect';
@@ -869,7 +872,7 @@
   // ---------- mode switching ----------
   const hint3d = document.getElementById('hint3d');
   const howtoEl = document.getElementById('howto');
-  document.querySelectorAll('.tab').forEach((t) => {
+  $$('.tab').forEach((t) => {
     t.addEventListener('click', async () => {
       if (t.dataset.mode === mode || scrambling) return;
       await waitIdle();
@@ -912,7 +915,7 @@
     },
   };
   function updateMethodNote() { methodNote.textContent = METHOD_NOTES[method][mode]; }
-  document.querySelectorAll('.segbtn').forEach((b) => {
+  $$('.segbtn').forEach((b) => {
     b.addEventListener('click', async () => {
       if (b.dataset.method === method || scrambling) return;
       await waitIdle();
@@ -925,8 +928,8 @@
   });
 
   // ---------- top buttons ----------
-  const btnSolve = document.getElementById('btnSolve');
-  const btnEdit = document.getElementById('btnEdit');
+  const btnSolve = /** @type {HTMLButtonElement} */ (document.getElementById('btnSolve'));
+  const btnEdit = /** @type {HTMLButtonElement} */ (document.getElementById('btnEdit'));
   const solutionEl = document.getElementById('solution');
   const paintCard = document.getElementById('paintCard');
 
@@ -1147,7 +1150,7 @@
     btnHarder.style.display = mode === '4' && method === 'fast' && typeof Worker !== 'undefined' ? '' : 'none';
   }
 
-  const btnHarder = document.getElementById('btnHarder');
+  const btnHarder = /** @type {HTMLButtonElement} */ (document.getElementById('btnHarder'));
   btnHarder.addEventListener('click', async () => {
     if (!solution || !baseState) return;
     await waitIdle();
@@ -1188,19 +1191,19 @@
   const progText = document.getElementById('progText');
   const bigdone = document.getElementById('bigdone');
   const pb = {
-    start: document.getElementById('pbStart'),
-    back: document.getElementById('pbBack'),
-    play: document.getElementById('pbPlay'),
-    fwd: document.getElementById('pbFwd'),
-    end: document.getElementById('pbEnd'),
+    start: /** @type {HTMLButtonElement} */ (document.getElementById('pbStart')),
+    back: /** @type {HTMLButtonElement} */ (document.getElementById('pbBack')),
+    play: /** @type {HTMLButtonElement} */ (document.getElementById('pbPlay')),
+    fwd: /** @type {HTMLButtonElement} */ (document.getElementById('pbFwd')),
+    end: /** @type {HTMLButtonElement} */ (document.getElementById('pbEnd')),
   };
-  document.getElementById('speed').addEventListener('input', (e) => { speedVal = +e.target.value; saveState(); });
+  document.getElementById('speed').addEventListener('input', (e) => { speedVal = +(/** @type {HTMLInputElement} */ (e.target)).value; saveState(); });
 
   function enterPlayback() {
     solutionEl.style.display = 'block';
     btnEdit.style.display = '';
     btnSolve.style.display = 'none';
-    paintCard.style.opacity = 0.45;
+    paintCard.style.opacity = '0.45';
     paintCard.style.pointerEvents = 'none';
     pbState = baseState.slice();
     if (mode === 'm') mirrorGeo = true;
@@ -1310,7 +1313,7 @@
       } else {
         // phone: the page scrolls under the pinned cube — keep the active
         // stage in the visible band between the cube and the bottom edge
-        const stage = document.querySelector('.stage3d');
+        const stage = /** @type {HTMLElement|null} */ (document.querySelector('.stage3d'));
         const band0 = (stage ? stage.getBoundingClientRect().bottom : 0) + 60;
         const r = stgEl.getBoundingClientRect();
         if (r.top < band0 || r.top > innerHeight - 120) {
@@ -1376,7 +1379,7 @@
   const themeBtn = document.getElementById('themeToggle');
   const applyTheme = (t) => {
     document.documentElement.dataset.theme = t;
-    const mtc = document.querySelector('meta[name="theme-color"]');
+    const mtc = /** @type {HTMLMetaElement|null} */ (document.querySelector('meta[name="theme-color"]'));
     if (mtc) mtc.content = t === 'light' ? '#f2f4f7' : '#0e1013';
     themeBtn.textContent = t === 'light' ? '🌙' : '☀️';
   };
@@ -1422,9 +1425,9 @@
   // sync the static markup with any restored state before the first paint
   // (howto/hint text is already set from the restored mode further up)
   if (savedState || sharedCube) {
-    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
-    document.querySelectorAll('.segbtn').forEach((x) => x.classList.toggle('on', x.dataset.method === method));
-    document.getElementById('speed').value = speedVal;
+    $$('.tab').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
+    $$('.segbtn').forEach((x) => x.classList.toggle('on', x.dataset.method === method));
+    /** @type {HTMLInputElement} */ (document.getElementById('speed')).value = String(speedVal);
   }
   buildPalette();
   buildCube();
@@ -1467,7 +1470,7 @@
     mode = s.m;
     data[mode].paint = s.p;
     shareVirgin = true;
-    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
+    $$('.tab').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
     howtoEl.innerHTML = HOWTO[mode];
     updateMethodNote();
     updateScanButton();
@@ -1508,8 +1511,8 @@
   const SCAN = window.SCAN;
   const scanEls = {
     overlay: document.getElementById('scanOverlay'),
-    video: document.getElementById('scanVideo'),
-    draw: document.getElementById('scanDraw'),
+    video: /** @type {HTMLVideoElement} */ (document.getElementById('scanVideo')),
+    draw: /** @type {HTMLCanvasElement} */ (document.getElementById('scanDraw')),
     progress: document.getElementById('scanProgress'),
     status: document.getElementById('scanStatus'),
     title: document.getElementById('scanTitle'),
@@ -1520,17 +1523,17 @@
     usePhoto: document.getElementById('scanUsePhoto'),
     undo: document.getElementById('scanUndo'),
     mirror: document.getElementById('scanMirror'),
-    file: document.getElementById('scanFile'),
+    file: /** @type {HTMLInputElement} */ (document.getElementById('scanFile')),
     photoStage: document.getElementById('photoStage'),
-    photoCanvas: document.getElementById('photoCanvas'),
-    photoSize: document.getElementById('photoSize'),
-    photoAngle: document.getElementById('photoAngle'),
+    photoCanvas: /** @type {HTMLCanvasElement} */ (document.getElementById('photoCanvas')),
+    photoSize: /** @type {HTMLInputElement} */ (document.getElementById('photoSize')),
+    photoAngle: /** @type {HTMLInputElement} */ (document.getElementById('photoAngle')),
     photoLabel: document.getElementById('photoLabel'),
     photoConfirm: document.getElementById('photoConfirm'),
     photoRetake: document.getElementById('photoRetake'),
     choice: document.getElementById('scanChoice'),
     choiceMsg: document.getElementById('scanChoiceMsg'),
-    openFull: document.getElementById('scanOpenFull'),
+    openFull: /** @type {HTMLAnchorElement} */ (document.getElementById('scanOpenFull')),
     retryCam: document.getElementById('scanRetryCam'),
     choicePhoto: document.getElementById('scanChoicePhoto'),
   };
@@ -2150,8 +2153,8 @@
       scan.photo.rect = { x: (innerWidth - side) / 2, y: (innerHeight - side) / 2 - innerHeight * 0.06, size: side, angle: 0 };
     }
     const minDim = Math.min(innerWidth, innerHeight);
-    scanEls.photoSize.value = Math.max(10, Math.min(95, Math.round((scan.photo.rect.size / minDim) * 100)));
-    scanEls.photoAngle.value = Math.round((scan.photo.rect.angle * 180) / Math.PI);
+    scanEls.photoSize.value = String(Math.max(10, Math.min(95, Math.round((scan.photo.rect.size / minDim) * 100))));
+    scanEls.photoAngle.value = String(Math.round((scan.photo.rect.angle * 180) / Math.PI));
     scanEls.photoLabel.textContent = det
       ? 'Found the face — drag or use the sliders if the grid is off, then confirm'
       : 'Drag the grid onto the cube face · sliders resize and rotate it';

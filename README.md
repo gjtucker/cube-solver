@@ -31,7 +31,11 @@ Opening `index.html` directly from `file://` also works (the 4×4 falls back to 
 
 ## Development
 
-Everything is plain scripts — no bundler, no dependencies. The interesting parts:
+Everything is plain scripts — no bundler, no dependencies. Types are checked
+without a build step: the shipped files carry JSDoc annotations, cross-file
+globals are declared in `types.d.ts`, and `npx tsc --noEmit` (config in
+`jsconfig.json`) must come back clean — nothing is compiled and nothing ships
+differently. The interesting parts:
 
 | File | What it is |
 |---|---|
