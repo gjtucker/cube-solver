@@ -50,7 +50,7 @@ const C4 = (() => {
   }
 
   function applyMove(state, move) {
-    const face = move.length > 1 && (move[1] === '2' || move[1] === "'") ? move[0] : move[0];
+    const face = move[0];
     let times = 1;
     if (move.length > 1) times = move[1] === '2' ? 2 : 3;
     const perm = MOVE_PERM[face];
@@ -395,7 +395,6 @@ const C4 = (() => {
     // ---------- edge pairing ----------
     pairedKeys() { return C4.DEDGE_KEYS.filter((k) => C4.dedgePaired(this.state, k)); }
     solveEdges() {
-      const centersIntact = (st) => C4.CENTERS.every((c) => st[c.idx] === this.scheme[c.face]);
       for (let guard = 0; guard < 30; guard++) {
         const unpaired = C4.DEDGE_KEYS.filter((k) => !C4.dedgePaired(this.state, k));
         if (unpaired.length === 0) break;
@@ -408,10 +407,10 @@ const C4 = (() => {
           continue;
         }
         // try each unpaired dedge until one pairs
-        let done = false, lastErr = null;
+        let done = false;
         for (const k of unpaired) {
           try { this.pairOne(k); done = true; break; }
-          catch (e) { if (e instanceof SolveError4) lastErr = e; else throw e; }
+          catch (e) { if (!(e instanceof SolveError4)) throw e; }
         }
         if (!done) {
           // fall back to the front-slot algorithm machinery — it needs no
@@ -522,7 +521,6 @@ const C4 = (() => {
           wingColors(st, fam.anchor) === pairCols && this.pairedPreserved(st));
         if (!s1) continue;
         this.do(s1);
-        const other = fam.anchor === SLOT.FRlo ? SLOT.FRup : SLOT.FRlo;
         const validMerges = (st) => {
           if (wingColors(st, fam.anchor) !== pairCols) return [];
           return fam.merges.filter((m) => {
@@ -684,13 +682,6 @@ const C4 = (() => {
     return Math.abs(w.coords[1]) === 0.5 && w.coords[0] === -1.5 && w.coords[2] === 1.5;
   });
   const UF_FR_KEY = FR_KEY;
-  function keyOfPair(st, cols) {
-    for (const k of C4.DEDGE_KEYS) {
-      const [x] = C4.DEDGES[k];
-      if (wingColors(st, x) === cols) return k;
-    }
-    return null;
-  }
 
   function validate4(state) {
     const errs = [];

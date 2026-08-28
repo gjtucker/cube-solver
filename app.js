@@ -4,9 +4,11 @@
   // ---- 4×4 fast solver: shipped tables + parallel search workers ----
   // The table bundle is fetched once in the background (skipping the ~10s
   // on-device build) and shared with a small worker pool; each worker runs
-  // one portfolio search config and the shortest reduction wins. Every step
-  // degrades gracefully: no DecompressionStream / no Workers / failed fetch
-  // all fall back to the synchronous on-device path.
+  // the deep exact-phase-3 engine on one colour-axis rotation and the
+  // shortest reduction wins (the beam portfolio and the synchronous path
+  // remain fallbacks). Every step degrades gracefully: no
+  // DecompressionStream / no Workers / failed fetch all fall back to the
+  // synchronous on-device path.
   const solver4 = {
     tablesP: null, pool: null, calls: new Map(), nextId: 1,
     loadTables() {
@@ -444,7 +446,7 @@
     const cs = mode === '3' ? S : mode === '4' ? S * 0.75 : S * 1.5; // cubie size
     for (const k in cubies) {
       const { el, coords, faces } = cubies[k];
-      const step = mode === '3' ? S : mode === '4' ? S * 0.75 : S * 0.75;
+      const step = mode === '3' ? S : S * 0.75;
       el.dataset.base = `translate3d(${coords[0] * step}px, ${-coords[1] * step}px, ${coords[2] * step}px)`;
       el.style.transform = el.dataset.base;
       for (const f in faces) {
@@ -1089,8 +1091,8 @@
         return;
       }
     }
-    // fast solvers build lookup tables on first use; the 4x4 search always
-    // takes a few seconds — let the UI paint a notice first
+    // fast solvers build lookup tables on first use; the 4x4 search can take
+    // a few seconds (beginner path, cold tables) — let the UI paint a notice first
     const needsWarmup = (method === 'fast' && (mode === '3' || mode === '4' ? !C.K.ready : !C.Pocket.dist)) || mode === '4';
     if (needsWarmup) {
       const msg = mode === '4'
@@ -1136,7 +1138,7 @@
     updateHarderButton();
   });
 
-  // 4×4 fast solutions can be refined by a much deeper (~1 min) search
+  // 4×4 fast solutions can be refined by a deeper (~10-20 s) search
   function updateHarderButton() {
     btnHarder.style.display = mode === '4' && method === 'fast' && typeof Worker !== 'undefined' ? '' : 'none';
   }
@@ -1534,7 +1536,7 @@
     stream: null, raf: 0, stable: 0, lastSig: '', cooldownUntil: 0,
     sampleCanvas: document.createElement('canvas'),
     detectCanvas: document.createElement('canvas'),
-    photo: { img: null, rect: null, drag: null },
+    photo: { img: null, px: null, rect: null, drag: null },
     live: false,
     mirror: false, facing: '',      // preview mirrored? (front camera) / camera facing mode
     track: null, frame: 0,          // auto-detected cube square (sample-canvas coords)
@@ -1604,6 +1606,9 @@
         video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
+      // the scanner may have been closed while the permission prompt was up —
+      // a stream adopted now would keep the camera running with no UI attached
+      if (!scan.active) { for (const t of stream.getTracks()) t.stop(); return; }
       await startLive(stream);
     } catch (e) {
       // no camera / not permitted / embedded frame / insecure context
@@ -1614,6 +1619,12 @@
     scan.stream = stream;
     scanEls.video.srcObject = stream;
     await scanEls.video.play();
+    if (!scan.active) {   // closed while the video was starting up
+      for (const t of stream.getTracks()) t.stop();
+      scan.stream = null;
+      scanEls.video.srcObject = null;
+      return;
+    }
     // front cameras (laptops, selfie cams) get a mirrored preview so the cube
     // moves the way the user moves it; a remembered manual choice wins
     const track = stream.getVideoTracks()[0];
@@ -1684,6 +1695,7 @@
     scan.track = null;
     scan.tracker.reset();
     scan.source = null;
+    scan.photo.px = null;   // release the cached photo pixels
     // a reopened scanner (or the camera-denied card) must not sit on the
     // previous session's frozen grid
     const dctx = scanEls.draw.getContext('2d');
@@ -2101,6 +2113,7 @@
   }
   function loadPhoto(img) {
     scan.photo.img = img;
+    scan.photo.px = null;   // new photo: the cached ImageData is stale
     scanEls.photoStage.style.display = 'block';
     const L = photoLayout();
     const n = SCAN.gridN(scan.scanMode);
@@ -2136,8 +2149,12 @@
     const f = scanEls.file.files && scanEls.file.files[0];
     if (!f) return;
     const img = new Image();
-    img.onload = () => loadPhoto(img);
-    img.src = URL.createObjectURL(f);
+    const url = URL.createObjectURL(f);
+    // revoke once decoded — otherwise every captured photo's blob stays
+    // reachable for the life of the page (six multi-MB photos per scan)
+    img.onload = () => { URL.revokeObjectURL(url); loadPhoto(img); };
+    img.onerror = () => URL.revokeObjectURL(url);
+    img.src = url;
   });
   function photoLayout() {
     // fit-contain layout of the photo on the full-screen canvas
@@ -2148,15 +2165,20 @@
   }
   function drawPhotoStage() {
     const cv = scanEls.photoCanvas;
-    cv.width = innerWidth; cv.height = innerHeight;
+    if (cv.width !== innerWidth || cv.height !== innerHeight) {
+      cv.width = innerWidth; cv.height = innerHeight;
+      scan.photo.px = null;
+    }
     const ctx = cv.getContext('2d', { willReadFrequently: true });
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, cv.width, cv.height);
     const L = photoLayout();
     ctx.drawImage(scan.photo.img, L.x, L.y, L.w, L.h);
     const n = SCAN.gridN(scan.scanMode);
-    const px = ctx.getImageData(0, 0, cv.width, cv.height);
-    const res = SCAN.sampleGrid(px, scan.photo.rect, n);
+    // the photo pixels don't change while the grid is dragged — cache the
+    // (multi-MB) getImageData instead of re-reading the canvas per pointermove
+    if (!scan.photo.px) scan.photo.px = ctx.getImageData(0, 0, cv.width, cv.height);
+    const res = SCAN.sampleGrid(scan.photo.px, scan.photo.rect, n);
     drawGridSquare(ctx, scan.photo.rect, n, res.cells.map((c) => SCAN.hueClass(c)), '#3ddc84', false);
   }
   scanEls.photoCanvas.addEventListener('pointerdown', (e) => {

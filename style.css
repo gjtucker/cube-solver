@@ -353,8 +353,6 @@
   /* ---- light theme ("paper"): white cards on pale gray, ink text, blue
      accent, soft shadows. Resolved into html[data-theme] by the script in
      index.html: URL ?theme= > saved toggle choice > system preference. ---- */
-  /* "light": clean paper — white cards on pale gray, blue accent,
-     ink text, soft shadows */
   html[data-theme="light"] {
     --bg1: #f2f4f7;
     --card: #ffffff;

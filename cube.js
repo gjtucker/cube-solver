@@ -449,7 +449,7 @@ class Solver {
         if (!applied) throw new SolveError('corner perm mapping failed');
         continue;
       }
-      // 2 correct: impossible for valid cube unless... apply CP to shuffle
+      // 2 correct: a lone corner swap breaks permutation parity — the paint is wrong
       if (correct.length === 2) throw new SolveError('unsolvable: corner permutation');
     }
     throw new SolveError('corner permutation loop exceeded');
@@ -1038,10 +1038,9 @@ function solveMirror(shapes) {
   if (byCount[0].length !== 1 || byCount[1].length !== 3 || byCount[2].length !== 3 || byCount[3].length !== 1) {
     return { error: 'these shapes don’t form a real mirror 2×2 (need exactly one smallest piece, three flat pieces, three chunky pieces and one biggest piece) — double-check the sticker sizes' };
   }
-  const ROLES = { 0: ['BDL'], 3: [cornerKey('U','R','F')],
+  const ROLES = { 0: [cornerKey('D','B','L')], 3: [cornerKey('U','R','F')],
     1: [cornerKey('U','L','B'), cornerKey('D','R','B'), cornerKey('D','L','F')],
     2: [cornerKey('U','R','B'), cornerKey('U','L','F'), cornerKey('D','R','F')] };
-  ROLES[0] = [cornerKey('D','B','L')];
 
   const tryAssignment = (roleOf) => {
     // per slot: candidate axis->color maps consistent with observed dims
@@ -1505,15 +1504,9 @@ const K = (() => {
       CNK[n][k] = k === 0 ? 1 : n === 0 ? 0 : (CNK[n - 1][k] || 0) + (CNK[n - 1][k - 1] || 0);
     }
   }
-  // rank a sorted 4-subset of 0..11
+  // rank a sorted 4-subset of 0..11: sum over chosen positions
   function comboRank(set) {
     let r = 0;
-    for (let i = 0, k = 1; i < 12 && k <= 4; i++) {
-      if (set.includes(i)) k++;
-      else if (k <= 4) r += 0; // placeholder
-    }
-    // standard ranking: sum over chosen positions
-    r = 0;
     let k = 0;
     for (let i = 0; i < 12; i++) {
       if (set.includes(i)) { r += CNK[i][++k]; }

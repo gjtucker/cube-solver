@@ -45,6 +45,7 @@ Both core pipelines have measurement harnesses with pass/fail targets:
 
 ```sh
 node tests/scan-harness.mjs --seed 1     # scanner: lock rate / bad fits / false locks on synthetic scenes
+node tests/hueclass-field.mjs            # colour classifier vs field-measured phone-camera pixels
 node tests/solve4-harness.mjs            # 4×4 solver: move count + wall time
 node tests/solve4-harness.mjs --hard     # the "Search harder" deep mode
 node tests/browser-worker-test.mjs       # the real-browser worker path (needs playwright)

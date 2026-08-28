@@ -3,7 +3,7 @@
 // deploys are picked up immediately and the cache only serves when the
 // network can't. The core files are pre-cached on install so the app works
 // offline even for pages never revisited.
-const CACHE = 'cube-solver-v2';
+const CACHE = 'cube-solver-v3'; // bump on every release so offline clients refresh
 const CORE = [
   './',
   'index.html',
@@ -18,8 +18,10 @@ const CORE = [
   'tables/tpr4-v1.bin.gz',
   'manifest.webmanifest',
   'icons/icon.svg',
+  'icons/icon-32.png',
   'icons/icon-192.png',
   'icons/icon-512.png',
+  'icons/apple-touch-icon.png',
 ];
 
 self.addEventListener('install', (e) => {
