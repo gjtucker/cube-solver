@@ -717,13 +717,17 @@
       else if (move[1] === '2') angle = 180;
       const axis = [n[0], -n[1], n[2]];
       const affected = [];
+      let lx = 0, ly = 0, lz = 0, lc = 0;   // mean coords of the turning layer
       for (const k in cubies) {
         const { el, coords } = cubies[k];
         const d = coords[0] * n[0] + coords[1] * n[1] + coords[2] * n[2];
         const inLayer = mode === '4'
           ? (isInner ? Math.abs(d - 0.5) < 0.01 : d > 1)
           : d >= 1;
-        if (inLayer) affected.push(el);
+        if (inLayer) {
+          affected.push(el);
+          lx += coords[0]; ly += coords[1]; lz += coords[2]; lc++;
+        }
       }
       // mirror-geometry turns pivot on the offset cut axis (through the cut
       // corner), which keeps the two halves on opposite sides of the cut
@@ -734,15 +738,50 @@
         ? `translate3d(${px}px, ${py}px, ${pz}px) rotate3d(${axis[0]}, ${axis[1]}, ${axis[2]}, ${angle}deg) translate3d(${-px}px, ${-py}px, ${-pz}px) `
         : `rotate3d(${axis[0]}, ${axis[1]}, ${axis[2]}, ${angle}deg) `;
       cubeEl.classList.add('turning');
+      // direction ring: a band in the turning layer's plane, just outside the
+      // cube, that sweeps along with the turn — face, layer and direction are
+      // all visible at a glance (skipped in mirror geometry, whose off-centre
+      // pivot would put the ring in the wrong place)
+      let ring = null;
+      if (lc && !(mode === 'm' && mirrorGeo)) {
+        const step = mode === '3' ? S : S * 0.75;
+        const R = S * 2.25;
+        ring = document.createElement('div');
+        ring.className = 'turnring';
+        ring.style.width = ring.style.height = `${2 * R}px`;
+        ring.style.left = `${-R}px`;
+        ring.style.top = `${-R}px`;
+        const rot = n[0] ? 'rotateY(90deg)' : n[1] ? 'rotateX(90deg)' : '';
+        const off = (n[0] ? lx / lc : n[1] ? ly / lc : lz / lc) * step;
+        ring.dataset.base = `${rot} translateZ(${off}px)`;
+        ring.style.transform = ring.dataset.base;
+        ring.innerHTML = `<svg viewBox="-110 -110 220 220">
+          <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M 94 -34 A 100 100 0 1 0 94 34" stroke="rgba(0,0,0,0.55)" stroke-width="9"/>
+            <path d="M 94 -34 A 100 100 0 1 0 94 34" stroke="#fff" stroke-width="4.5"/>
+            <path d="M 78 -46 L 94 -34 L 76 -18" stroke="rgba(0,0,0,0.55)" stroke-width="9"/>
+            <path d="M 78 -46 L 94 -34 L 76 -18" stroke="#fff" stroke-width="4.5"/>
+            <path d="M 78 46 L 94 34 L 76 18" stroke="rgba(0,0,0,0.55)" stroke-width="9"/>
+            <path d="M 78 46 L 94 34 L 76 18" stroke="#fff" stroke-width="4.5"/>
+          </g>
+        </svg>`;
+        cubeEl.appendChild(ring);
+        void ring.offsetWidth;   // commit the resting transform before animating
+      }
       affected.forEach((el) => {
         el.style.transition = `transform ${dur}ms cubic-bezier(0.35, 0, 0.25, 1)`;
         el.style.transform = pivot + el.dataset.base;
       });
+      if (ring) {
+        ring.style.transition = `transform ${dur}ms cubic-bezier(0.35, 0, 0.25, 1)`;
+        ring.style.transform = pivot + ring.dataset.base;
+      }
       setTimeout(() => {
         // a concurrent handler may have torn the playback state down (or an
         // engine hiccup thrown) — the promise must still settle, or animating
         // sticks forever and every await waitIdle() in the app hangs
         try {
+          if (ring) ring.remove();
           if (pbState) pbState = ENG().applyMove(pbState, move);
           affected.forEach((el) => { el.style.transition = 'none'; });
           render();
@@ -1003,25 +1042,31 @@
   }
   async function applyPattern(p) {
     if (scrambling || animating) return;
-    scrambling = true;
     shareVirgin = false;
-    try {
-      await waitIdle();
-      exitPlayback();
-      clearMsg();
-      if (viewMode === 'net') setView('3d');   // watch the moves happen
-      data[mode].paint = mode === '4' ? C4.solvedState() : C.solvedState();
-      pbState = data[mode].paint;
-      render();
-      await sleep(300);
-      await playSequence(p.alg.split(' '), 110);
-      data[mode].paint = pbState;
-      pbState = null;
-      render();
-      showMsg(`${p.name} — from a solved cube: ${p.alg}`, 'ok');
-    } finally {
-      scrambling = false;
-    }
+    await waitIdle();
+    exitPlayback();
+    clearMsg();
+    if (viewMode === 'net') setView('3d');   // watch the moves happen
+    // a pattern is a build sequence from a solved cube — present it through
+    // the same playback UI as a solution, so the move list is visible,
+    // steppable and copyable instead of just flashing past
+    const moves = p.alg.split(' ');
+    const solved = ENG().solvedState();
+    data[mode].paint = ENG().applyAlg(solved, moves);
+    baseState = solved.slice();
+    solution = {
+      moves,
+      stages: [{
+        name: p.name,
+        desc: 'Built from a solved cube — follow the moves on yours, or step through them here.',
+        start: 0,
+        end: moves.length,
+      }],
+    };
+    moveIndex = 0;
+    enterPlayback();
+    showMsg(`${p.name} — ${moves.length} moves from a solved cube. “Edit cube” keeps the pattern.`, 'ok');
+    pb.play.click();   // and watch it build, like before
   }
 
   btnSolve.addEventListener('click', async () => {
