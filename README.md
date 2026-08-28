@@ -10,8 +10,8 @@ Scan your cube with the camera and follow a step-by-step 3D solution, right in t
 
 - **Camera scanning** — point your camera at each face and the scanner locks on automatically: position, size and tilt. Works with stickered cubes *and* gapless stickerless cubes (it reads the corner notches where tiles meet, since those cubes have no seams). Auto-captures only when it's genuinely sure; manual capture and undo are always available.
 - **Four puzzles** — 3×3, 4×4, 2×2 and Mirror 2×2.
-- **Two solving styles** — *Step-by-step* teaches the classic layer-by-layer method in friendly stages, each with a "Why this works" explainer of the underlying idea (commutators, twist parity, 4×4 parities); *Fewest moves* finds short solutions (two-phase for 3×3; the 4×4 reduces phase-by-phase and finishes with exact IDA* over TPR-style pruning tables — ~46 moves in a few seconds, ~45 with "Search harder").
-- **Fast 4×4 solving in the browser** — 228 KB of compressed lookup tables load in ~50 ms; the larger exact-search pruning tables build on-device inside each Web Worker (~3 s, prewarmed in the background when you enter 4×4 mode). A fewest-moves solve takes ~4 seconds at ~46 moves without freezing the page.
+- **Two solving styles** — *Step-by-step* teaches the classic layer-by-layer method in friendly stages, each with a "Why this works" explainer of the underlying idea (commutators, twist parity, 4×4 parities); *Fewest moves* finds short solutions (two-phase for 3×3; the 4×4 reduces phase-by-phase and finishes with exact IDA* over TPR-style pruning tables — ~46 moves in about a second, ~44 with "Search harder").
+- **Fast 4×4 solving in the browser** — 228 KB of compressed lookup tables load in ~50 ms; the big exact-search pruning table (57 MB, 239.5M entries at 2 bits) is built on-device inside each Web Worker and prewarmed in the background when you enter 4×4 mode. A fewest-moves solve then takes about a second at ~46 moves, or ~44 with "Search harder", without freezing the page.
 - **3D playback** — animated cube with play/pause, stepping, speed control, and per-stage move lists. Your cube and playback position survive refreshes.
 - **2D net view** — a flat unfolded cross as an alternative to the 3D cube while painting; some find it much easier to copy a real cube face-by-face.
 - **Pretty patterns** — checkerboard, cube-in-cube, superflip and friends, animated from a solved cube with the moves shown so you can follow along. Every algorithm is verified against the engine (fun fact discovered doing so: a true checkerboard is mathematically impossible on 2×2 and 4×4 cubes).
@@ -37,7 +37,7 @@ Everything is plain scripts — no bundler, no dependencies. The interesting par
 |---|---|
 | `scan.js` | Camera scanner: blob segmentation → lattice fitting → physical-evidence gates (sticker seams / corner notches) → temporal tracker |
 | `cube.js` | 3×3/2×2 engine + layer-by-layer and two-phase solvers |
-| `cube4.js`, `tpr4.js`, `worker4.js` | 4×4 engine and phased-reduction solver: beam-portfolio fast path plus a deep engine (exact phase 3 by IDA* over an edge-pairing permutation table, parity solved structurally) racing three color-axis rotations across workers |
+| `cube4.js`, `tpr4.js`, `worker4.js` | 4×4 engine and phased-reduction solver: beam-portfolio fast path plus a deep engine (exact phase 3 by IDA* over an edge-pairing permutation table, parity solved structurally) racing colour-axis rotations across workers |
 | `tables/` | Pre-built solver tables (nibble-packed, gzipped); regenerate with `tools/gen-tables.mjs` |
 | `app.js` | UI: painting, 3D rendering, playback, persistence, scanner overlay |
 
@@ -71,12 +71,12 @@ CubeSnap's solvers stand on decades of public cube theory. **No third-party code
 
 | | TPR | CubeSnap |
 |---|---|---|
-| Edge pruning table | 31M entries × 2 bits, 8-fold symmetry reduction, depth 9 | 3.4M entries in an open-addressed hash keyed by an even-permutation rank, depth 8 |
+| Edge pruning table | 31M entries × 2 bits, 8-fold symmetry reduction, depth 9 | 239.5M entries × 2 bits, direct-indexed by even-permutation rank, depth 9 (no symmetry reduction) |
 | Phase-2 goal | centers + wing parity; phase-3 feasibility filtered afterwards | centers, parity **and** phase-3 feasibility searched jointly as one exact-depth problem |
 | 3×3 finish | min2phase | CubeSnap's own two-phase solver (`cube.js`) |
 | Orientation | one symmetry frame, rotations stripped at output | three color-axis rotations raced across Web Workers |
 
-Copyright covers the expression of a program rather than the algorithm it implements, which is why this project is MIT-licensed rather than GPL. If you want the original, use TPR — it is both faster (~250 ms) and shorter (~44.4 moves) than this one.
+Copyright covers the expression of a program rather than the algorithm it implements, which is why this project is MIT-licensed rather than GPL. TPR remains the more efficient solver — it reaches ~44.4 moves in ~250 ms against our ~44.1 in ~12 s, on a fraction of the memory — and it is the reference this one was measured against throughout.
 
 ### Assets and tooling
 

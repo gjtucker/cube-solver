@@ -75,6 +75,33 @@
       }));
       return out;
     },
+    // The depth-9 edge table is ~57 MB per worker, so how many workers may
+    // hold one is a memory decision, not a core-count one. Each worker covers
+    // one colour-axis rotation; fewer rotations costs about a move.
+    deepWorkerCount() {
+      const cores = Math.max(1, (navigator.hardwareConcurrency || 4) - 1);
+      const mem = navigator.deviceMemory || 4;          // GiB, absent on iOS
+      const byMem = mem >= 8 ? 3 : mem >= 4 ? 2 : 1;
+      return Math.min(3, cores, byMem);
+    },
+    // fast mode: tight budgets everywhere. Phase 3 is exact and cheap now, so
+    // the caps mostly bound the head and bridge searches.
+    fastCfg(rotate) {
+      return {
+        rotate, tries: 2, solutions: 2, results: 2,
+        softMs: 1200, bailEmpty: true, p3TimeCapMs: 700, headsNodeCap: 1.2e6,
+        nodeCap: 12e6, extraNodes: 6e5, bridgedCap: 3, bridgeNodeCap: 6e5,
+      };
+    },
+    // "Search harder" spends its budget on a far wider head pool: with phase 3
+    // exact, the remaining slack is in which phase-1/2 head you start from.
+    hardCfg(rotate) {
+      return {
+        rotate, tries: 40, solutions: 4, results: 4, softMs: 25000,
+        headCap: 40, p1cap: 60, p1slack: 2, p2cap: 6, perPrepCap: 6, tExtra: 7,
+        headsNodeCap: 30e6, nodeCap: 40e6, bridgedCap: 12, bridgeNodeCap: 20e6,
+      };
+    },
     // true cost of a reduction = length + the parity fixes it still owes
     // (flip ~15 moves, swap ~7); falls back to bare length when the main
     // thread has no tables to judge parity with
@@ -98,11 +125,12 @@
       if (typeof Worker === 'undefined') return null;
       const TPR4 = window.TPR4;
       const tables = await this.loadTables();
-      const n = Math.min(TPR4.PORTFOLIO.length, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
+      const n = this.deepWorkerCount();
       const pool = this.getPool(n, tables);
-      const STEPS = 5; // 3 rotations + finish + done
-      const deepRes = await this.mapPool(pool, [0, 1, 2],
-        (rotate) => ({ t: 'deep', state, cfg: { rotate, tries: 3, solutions: 4, results: 4 } }),
+      const rots = [0, 1, 2].slice(0, n);
+      const STEPS = rots.length + 2;
+      const deepRes = await this.mapPool(pool, rots,
+        (rotate) => ({ t: 'deep', state, cfg: this.hardCfg(rotate) }),
         (done) => onProgress && onProgress(done, STEPS));
       const cands = [];
       for (const r of deepRes) if (r && r.reds) for (const red of r.reds) cands.push(red);
@@ -117,7 +145,7 @@
         // fallback: beam-search portfolio, ranked by true cost
         const reds = await this.mapPool(pool, TPR4.PORTFOLIO_DEEP,
           (cfg) => ({ t: 'reduce', state, cfg }),
-          (done, total) => onProgress && onProgress(3, STEPS));
+          () => onProgress && onProgress(rots.length, STEPS));
         const good = reds.map((r) => r && r.red).filter(Boolean)
           .map((red) => ({ red, cost: this.reductionCost(state, red) }))
           .sort((a, b) => a.cost - b.cost);
@@ -127,7 +155,7 @@
           if (picks.length === 4) break;
         }
       }
-      if (onProgress) onProgress(4, STEPS);
+      if (onProgress) onProgress(STEPS - 1, STEPS);
       const budget3 = { timeLimit: 5000, target: 17, minSearch: 1500 };
       const fins = await this.mapPool(pool, picks, (red) => ({ t: 'finish', state, red, budget3 }));
       if (onProgress) onProgress(STEPS, STEPS);
@@ -146,7 +174,7 @@
       this.deepWarmed = true;
       this.loadTables().then((tables) => {
         const TPR4 = window.TPR4;
-        const n = Math.min(TPR4.PORTFOLIO.length, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
+        const n = this.deepWorkerCount();
         for (const w of this.getPool(n, tables)) this.call(w, { t: 'deepinit' }).catch(() => {});
       }).catch(() => {});
     },
@@ -158,16 +186,11 @@
       try {
         const TPR4 = window.TPR4;
         const tables = await this.loadTables();
-        const n = Math.min(TPR4.PORTFOLIO.length, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
+        const n = this.deepWorkerCount();
         const pool = this.getPool(n, tables);
-        const rots = [0, 1, 2].slice(0, pool.length);
-        const fastCfg = (rotate) => ({
-          rotate, tries: 3, solutions: 2, results: 2,
-          softMs: 3200, bailEmpty: true, p3TimeCapMs: 1400, headsNodeCap: 1.5e6,
-          nodeCap: 15e6, extraNodes: 1e6, bridgedCap: 4, bridgeNodeCap: 1.2e6,
-        });
+        const rots = [0, 1, 2].slice(0, n);
         const deepRes = await Promise.all(rots.map((rotate, i) =>
-          this.call(pool[i], { t: 'deep', state, cfg: fastCfg(rotate) })));
+          this.call(pool[i], { t: 'deep', state, cfg: this.fastCfg(rotate) })));
         const cands = [];
         for (const r of deepRes) if (r && r.reds) for (const red of r.reds) cands.push(red);
         if (!cands.length) {
@@ -196,7 +219,7 @@
           if (!best) return C4.solve4(state, 'fast');
           picks = [best];
         }
-        const budget3 = { timeLimit: 1500, target: 19, minSearch: 400 };
+        const budget3 = { timeLimit: 600, target: 20, minSearch: 200 };
         const fins = await this.mapPool(pool, picks, (red) => ({ t: 'finish', state, red, budget3 }));
         let best = null;
         for (const f of fins) {

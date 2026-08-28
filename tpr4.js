@@ -25,7 +25,8 @@
 // Tables ship pre-built (tables/tpr4-v1.bin.gz, ~228 KB gzipped; regenerate
 // with tools/gen-tables.mjs) and are fetched at page load; generating them
 // on-device (~10 s) remains the fallback when the download is unavailable.
-// The deep engine's larger tables are always built on-device (~3 s).
+// The deep engine's edge table is always built on-device (~10 s, 57 MB),
+// which is why the app prewarms it in the background on entering 4x4 mode.
 
 const C4t = typeof module !== 'undefined' ? require('./cube4.js') : globalThis.Cube4;
 
@@ -227,7 +228,12 @@ const TPR4 = (() => {
     }
   }
   const N70 = CNK[8][4]; // 70
-  function rank8(mask) { return rankMask(mask, 8, 4); }
+  // 256-entry lookup. The generic rankMask loop chases CNK's array-of-arrays
+  // eight times per call (~34 ns measured); the phase-3 inner loop needs three
+  // of those per node, which made it the single most expensive thing there.
+  const RANK8_T = new Int16Array(256);
+  for (let m = 0; m < 256; m++) RANK8_T[m] = rankMask(m, 8, 4);
+  function rank8(mask) { return RANK8_T[mask]; }
   let dist3c = null; // Uint8Array(70*70*70)
   function buildPhase3Centers() {
     const N = N70 * N70 * N70;
@@ -1167,6 +1173,21 @@ const TPR4 = (() => {
     for (let i = 0; i < p.length; i++) for (let j = i + 1; j < p.length; j++) if (p[i] > p[j]) inv++;
     return inv & 1;
   }
+  // parity of a 12-permutation by cycle decomposition: ~12 steps instead of
+  // the 66 comparisons of the generic inversion count, and this runs on every
+  // node of the head and bridge searches
+  function permParity12(p) {
+    let seen = 0, par = 0;
+    for (let i = 0; i < 12; i++) {
+      if (seen & (1 << i)) continue;
+      let j = i, len = 0;
+      while (!(seen & (1 << j))) { seen |= 1 << j; j = p[j]; len++; }
+      par ^= (len - 1) & 1;
+    }
+    return par;
+  }
+  // scratch reused by the feasibility test (never reentrant)
+  const FF_A = new Uint8Array(12), FF_BINV = new Uint8Array(12), FF_REL = new Uint8Array(12);
   // S12 Lehmer rank; consecutive ranks {2k,2k+1} differ by one transposition,
   // so rank>>1 is a perfect index for the even half.
   function rankPerm12(p) {
@@ -1288,53 +1309,108 @@ const TPR4 = (() => {
   }
 
   // ---- deep pruning tables (lazy; ~3-5s once, then cached in the worker) ----
-  const EDGE_DEPTH = 8;          // BFS horizon: ~3.4M states, "≥9" beyond
-  const EDGE_CAP = 1 << 23;      // open-addressed hash capacity (load ~0.40)
-  let edgeHash = null;           // Uint32Array: (evenRank<<4)|(depth+1), 0=empty
-  let cpDist = null;             // Uint8Array(70*70*70*2) exact G3 distances
-  function edgeInsert(evenRank, depth) {
-    let h = (Math.imul(evenRank, 0x9E3779B1) >>> 9) & (EDGE_CAP - 1);
-    const v = ((evenRank << 4) | (depth + 1)) >>> 0;
-    for (;;) {
-      const cur = edgeHash[h];
-      if (cur === 0) { edgeHash[h] = v; return true; }
-      if ((cur >>> 4) === evenRank) return false;
-      h = (h + 1) & (EDGE_CAP - 1);
-    }
+  // ---- edge pruning table: 2-bit direct-indexed, distance mod 3 -------------
+  // The even-permutation rank IS the index, so there is no hashing, no probing
+  // and no stored keys -- 239.5M entries at 2 bits = 57 MB flat, which is what
+  // makes a depth-9 horizon affordable at all (a keyed hash that deep would
+  // need ~4x the memory).
+  //
+  // Values 0/1/2 are the exact distance mod 3 for states inside the horizon;
+  // 3 means "beyond it". Two bits suffice because one move changes the true
+  // distance by exactly -1, 0 or +1, and those three are distinct mod 3 -- so
+  // given the parent's distance, the child's follows from its two bits. That
+  // is the incremental step edgeStep() below, and it replaces a full distance
+  // lookup with a single shift-and-mask on every node.
+  const N_EVEN = 239500800;      // 12!/2 -- every even permutation of S12
+  const EDGE_DEPTH = 9;          // BFS horizon; "≥10" beyond it
+  let edgeBits = null;           // Uint8Array(N_EVEN/4)
+
+  function edgeRead(evenRank) {
+    return (edgeBits[evenRank >> 2] >> ((evenRank & 3) << 1)) & 3;
   }
-  function edgeLookup(evenRank) {
-    let h = (Math.imul(evenRank, 0x9E3779B1) >>> 9) & (EDGE_CAP - 1);
-    for (;;) {
-      const cur = edgeHash[h];
-      if (cur === 0) return EDGE_DEPTH + 1;
-      if ((cur >>> 4) === evenRank) return (cur & 15) - 1;
-      h = (h + 1) & (EDGE_CAP - 1);
-    }
+  // child distance from the parent's reported distance and the child's 2 bits
+  function edgeStep(evenRank, parentDist) {
+    const v = (edgeBits[evenRank >> 2] >> ((evenRank & 3) << 1)) & 3;
+    if (v === 3) return EDGE_DEPTH + 1;      // outside the horizon
+    if (parentDist > EDGE_DEPTH) return EDGE_DEPTH;
+    // inside: the true distance is one of parent-1, parent, parent+1
+    if (v === (parentDist + 2) % 3) return parentDist - 1;
+    if (v === parentDist % 3) return parentDist;
+    return parentDist + 1;
   }
-  function buildEdgeHash(progress) {
+  // exact distance for a search root, where no parent value is available:
+  // the residue narrows it to every third value, and a greedy descent along
+  // strictly decreasing distances confirms the right one (a descent always
+  // exists from the true distance, and never from one that is too small).
+  function edgeExact(evenRank) {
+    const v = edgeRead(evenRank);
+    if (v === 3) return EDGE_DEPTH + 1;
+    if (v === 0 && evenRank === EDGE_GOAL_RANK) return 0;
+    const { mSi, mTau, nM } = searchTables();
+    const cur = new Uint8Array(12), nxt = new Uint8Array(12), tmp = new Uint8Array(12);
+    for (let d0 = v === 0 ? 3 : v; d0 <= EDGE_DEPTH; d0 += 3) {
+      unrankPerm12(evenRank * 2, cur);
+      if (permParity(cur) !== 0) unrankPerm12(evenRank * 2 + 1, cur);
+      let dist = d0, ok = true;
+      while (dist > 0) {
+        let stepped = false;
+        for (let k = 0; k < nM && !stepped; k++) {
+          const si = mSi[k], t = mTau[k];
+          for (let x = 0; x < 12; x++) nxt[x] = t[cur[si[x]]];
+          const r = rankPerm12(nxt) >>> 1;
+          // among a state's neighbours only those one step closer carry this
+          // residue, so any match is a genuine descent
+          if (edgeRead(r) === (dist + 2) % 3) { tmp.set(nxt); cur.set(tmp); dist--; stepped = true; }
+        }
+        if (!stepped) { ok = false; break; }
+      }
+      // the guess is only confirmed if the descent lands on the identity: a
+      // guess that is too small also descends happily, it just stops short
+      if (ok && (rankPerm12(cur) >>> 1) === EDGE_GOAL_RANK) return d0;
+    }
+    return EDGE_DEPTH + 1;
+  }
+
+  let EDGE_GOAL_RANK = 0;
+  function buildEdgeTable(progress) {
     const { sigmaInv, tau } = deepStructure();
-    edgeHash = new Uint32Array(EDGE_CAP);
+    edgeBits = new Uint8Array(N_EVEN / 4).fill(0xff);   // all "beyond horizon"
     const id = new Uint8Array(12);
     for (let i = 0; i < 12; i++) id[i] = i;
-    let frontier = new Uint32Array([rankPerm12(id)]); // full ranks
-    edgeInsert(frontier[0] >>> 1, 0);
-    const p = new Uint8Array(12), q = new Uint8Array(12);
+    const goal = rankPerm12(id);
+    EDGE_GOAL_RANK = goal >>> 1;
+    const write = (r, val) => {
+      const sh = (r & 3) << 1;
+      edgeBits[r >> 2] = (edgeBits[r >> 2] & ~(3 << sh)) | (val << sh);
+    };
+    write(EDGE_GOAL_RANK, 0);
+    let frontier = new Uint32Array([goal]);
     for (let d = 0; d < EDGE_DEPTH; d++) {
-      const next = new Uint32Array(Math.max(64, frontier.length * 12));
-      let n = 0;
+      const last = d + 1 === EDGE_DEPTH;   // final level: mark only, no frontier
+      const next = last ? null : new Uint32Array(Math.max(64, frontier.length * 12));
+      let n = 0, found = 0;
+      const val = (d + 1) % 3;
+      const p = new Uint8Array(12), q = new Uint8Array(12);
       for (let fi = 0; fi < frontier.length; fi++) {
         unrankPerm12(frontier[fi], p);
         for (const mi of G3) {
           const si = sigmaInv[mi], t = tau[mi];
           for (let x = 0; x < 12; x++) q[x] = t[p[si[x]]];
           const nr = rankPerm12(q);
-          if (edgeInsert(nr >>> 1, d + 1)) next[n++] = nr;
+          const er = nr >>> 1;
+          if (((edgeBits[er >> 2] >> ((er & 3) << 1)) & 3) === 3) {
+            write(er, val);
+            found++;
+            if (!last) next[n++] = nr;
+          }
         }
       }
-      frontier = next.subarray(0, n);
-      if (progress) progress('edge table depth ' + (d + 1), n);
+      frontier = last ? new Uint32Array(0) : next.subarray(0, n);
+      if (progress) progress('edge table depth ' + (d + 1), found);
+      if (!found) break;
     }
   }
+
   function buildCpTable() {
     const { maskT, sliceDouble } = deepStructure();
     cpDist = new Uint8Array(70 * 70 * 70 * 2).fill(255);
@@ -1366,7 +1442,7 @@ const TPR4 = (() => {
     const t0 = Date.now();
     buildCpTable();
     if (progress) progress('center+parity table', Date.now() - t0);
-    buildEdgeHash(progress);
+    buildEdgeTable(progress);
     if (progress) progress('edge pairing table', Date.now() - t0);
     deepTablesBuilt = true;
   }
@@ -1424,18 +1500,20 @@ const TPR4 = (() => {
   // G3-feasibility from incremental coordinates: wing permutation over the
   // 24 positions, the three axis masks, corner parity
   function feasibleFast(w, a0, a1, a2, cpar) {
-    const { posA, posB } = deepStructure();
+    const D = DEEP || deepStructure();
+    const posA = D.posA, posB = D.posB;
+    const A = FF_A, Binv = FF_BINV, rel = FF_REL;
     let maskA = 0;
-    for (let d = 0; d < 12; d++) maskA |= 1 << WING_DEDGE[w[posA[d]]];
-    if (maskA !== 0xfff) return false;
-    const A = new Uint8Array(12), Binv = new Uint8Array(12), rel = new Uint8Array(12);
     for (let d = 0; d < 12; d++) {
-      A[d] = WING_DEDGE[w[posA[d]]];
+      const dA = WING_DEDGE[w[posA[d]]];
+      A[d] = dA;
+      maskA |= 1 << dA;
       Binv[WING_DEDGE[w[posB[d]]]] = d;
     }
+    if (maskA !== 0xfff) return false;
     for (let d = 0; d < 12; d++) rel[d] = Binv[A[d]];
-    if (permParity(rel) !== 0) return false;
-    const bit = cpar ^ permParity(A);
+    if (permParity12(rel) !== 0) return false;
+    const bit = cpar ^ permParity12(A);
     return cpDist[cpIndexOf(a0, a1, a2, bit)] !== 255;
   }
 
@@ -1530,7 +1608,7 @@ const TPR4 = (() => {
       const moves = C4.cleanAlg4(prep.moves.concat(pathMi.map((mi) => MOVES36[mi])));
       const feas = deepFeasible8(cur);
       if (!feas) return; // defensive; the incremental test said feasible
-      const lb = Math.max(edgeLookup(rankPerm12(feas.rel) >>> 1),
+      const lb = Math.max(edgeExact(rankPerm12(feas.rel) >>> 1),
         cpDist[cpIndexOf(feas.masks[0], feas.masks[1], feas.masks[2], feas.bit)]);
       out.push({ moves, s8: cur, total: moves.length, lb });
     };
@@ -1595,32 +1673,55 @@ const TPR4 = (() => {
 
   // IDA* over (rel, axis masks, parity bit); h = max(edge table, cp table) is
   // admissible and h == 0 ⇔ fully reduced with zero parity debt.
-  function deepSolve3(s8, opts = {}) {
+  // Flattened per-move search tables, built once and reused across every
+  // deepSolve3 call: sigma-inverse/tau for the rel permutation, axis
+  // transitions in RANK space (so the inner loop never calls rank8), the
+  // parity flip, and axis/layer ids for canonical move ordering.
+  let SEARCH_T = null;
+  function searchTables() {
+    if (SEARCH_T) return SEARCH_T;
     const { sigmaInv, tau, maskT, sliceDouble } = deepStructure();
-    const nodeCap = opts.nodeCap || 30e6;
-    const feas = deepFeasible8(s8);
-    if (!feas) return { error: 'infeasible' };
     const nM = G3.length;
-    const mSi = [], mTau = [], mMaskT = [], mFlip = new Uint8Array(nM);
-    const mAxis = new Uint8Array(nM), mLayer = new Uint8Array(nM), mTok = [];
+    const mSi = [], mTau = [], mRank = [], mTok = [];
+    const mFlip = new Uint8Array(nM), mAxis = new Uint8Array(nM), mLayer = new Uint8Array(nM);
     for (let k = 0; k < nM; k++) {
       const mi = G3[k];
-      mSi.push(sigmaInv[mi]); mTau.push(tau[mi]); mMaskT.push(maskT[mi]);
+      mSi.push(sigmaInv[mi]); mTau.push(tau[mi]);
+      // maskT maps mask->mask; walk every 4-of-8 mask once to get rank->rank
+      const R = new Int16Array(3 * N70);
+      for (let ax = 0; ax < 3; ax++) {
+        const tab = maskT[mi][ax];
+        for (let m = 0; m < 256; m++) {
+          if (POPC12[m] !== 4) continue;
+          R[ax * N70 + RANK8_T[m]] = RANK8_T[tab[m]];
+        }
+      }
+      mRank.push(R);
       mFlip[k] = sliceDouble[mi];
       mAxis[k] = AXIS_OF_FACE[MOVES36[mi][0]];
       mLayer[k] = LAYER_OF_FACE[MOVES36[mi][0]];
       mTok.push(MOVES36[mi]);
     }
+    SEARCH_T = { nM, mSi, mTau, mRank, mFlip, mAxis, mLayer, mTok };
+    return SEARCH_T;
+  }
+
+  function deepSolve3(s8, opts = {}) {
+    const nodeCap = opts.nodeCap || 30e6;
+    const feas = deepFeasible8(s8);
+    if (!feas) return { error: 'infeasible' };
+    const { nM, mSi, mTau, mRank, mFlip, mAxis, mLayer, mTok } = searchTables();
     const MAXD = 24;
     const relStack = Array.from({ length: MAXD + 2 }, () => new Uint8Array(12));
     relStack[0].set(feas.rel);
     const path = new Int8Array(MAXD + 1);
-    const hOf = (rel, a, b, c, bit) => {
-      const he = edgeLookup(rankPerm12(rel) >>> 1);
-      const hc = cpDist[cpIndexOf(a, b, c, bit)];
-      return he > hc ? he : hc;
-    };
-    const h0 = hOf(relStack[0], feas.masks[0], feas.masks[1], feas.masks[2], feas.bit);
+    // centers ride as per-axis ranks (0..69), so the cp index is arithmetic
+    const q0 = RANK8_T[feas.masks[0]], q1 = RANK8_T[feas.masks[1]], q2 = RANK8_T[feas.masks[2]];
+    // the root has no parent value, so pay once for an exact lookup; every
+    // node below it rides the incremental mod-3 step instead
+    const he0 = edgeExact(rankPerm12(relStack[0]) >>> 1);
+    const hc0 = cpDist[((q0 * N70 + q1) * N70 + q2) * 2 + feas.bit];
+    const h0 = he0 > hc0 ? he0 : hc0;
     if (h0 === 0) return { solutions: [[]], nodes: 0 };
     // collect up to opts.solutions distinct optimal-length solutions: their
     // end states differ (dedge permutation is free), which feeds the 3x3
@@ -1630,7 +1731,7 @@ const TPR4 = (() => {
     const deadline = opts.timeCapMs ? Date.now() + opts.timeCapMs : Infinity;
     const solutions = [];
     let nodes = 0, aborted = false, nodesAtFirst = -1;
-    const dfs = (g, a, b, c, bit, bound, prevAxis, prevLayer) => {
+    const dfs = (g, a, b, c, bit, he, bound, prevAxis, prevLayer) => {
       const rel = relStack[g], nrel = relStack[g + 1];
       for (let k = 0; k < nM; k++) {
         const ax = mAxis[k], ly = mLayer[k];
@@ -1640,10 +1741,15 @@ const TPR4 = (() => {
         if (nodesAtFirst >= 0 && nodes > nodesAtFirst + extraNodes) return true;
         const si = mSi[k], t = mTau[k];
         for (let x = 0; x < 12; x++) nrel[x] = t[rel[si[x]]];
-        const T = mMaskT[k];
-        const na = T[0][a], nb = T[1][b], nc = T[2][c], nbit = bit ^ mFlip[k];
-        const h = hOf(nrel, na, nb, nc, nbit);
-        if (h === 0) {
+        const R = mRank[k];
+        const na = R[a], nb = R[N70 + b], nc = R[140 + c], nbit = bit ^ mFlip[k];
+        const er = rankPerm12(nrel) >>> 1;
+        const nhe = edgeStep(er, he);
+        const hc = cpDist[((na * N70 + nb) * N70 + nc) * 2 + nbit];
+        let h = nhe > hc ? nhe : hc;
+        // goal is tested against the coordinates themselves, never inferred
+        // from h reaching 0 (cpDist is exact, so hc === 0 really is solved)
+        if (er === EDGE_GOAL_RANK && hc === 0) {
           path[g] = k;
           const moves = [];
           for (let i = 0; i <= g; i++) moves.push(mTok[path[i]]);
@@ -1652,15 +1758,16 @@ const TPR4 = (() => {
           if (solutions.length >= wantSols) return true;
           continue;
         }
+        if (h === 0) h = 1;   // not solved, so at least one move remains
         if (g + 1 + h <= bound) {
           path[g] = k;
-          if (dfs(g + 1, na, nb, nc, nbit, bound, ax, ly)) return true;
+          if (dfs(g + 1, na, nb, nc, nbit, nhe, bound, ax, ly)) return true;
         }
       }
       return false;
     };
     for (let bound = h0; bound <= (opts.maxDepth || 20); bound++) {
-      dfs(0, feas.masks[0], feas.masks[1], feas.masks[2], feas.bit, bound, -1, 9);
+      dfs(0, q0, q1, q2, feas.bit, he0, bound, -1, 9);
       if (solutions.length) return { solutions, nodes };
       if (aborted) return { error: 'nodes', nodes };
     }
@@ -1721,7 +1828,7 @@ const TPR4 = (() => {
           seenCand.add(key);
           const feas = deepFeasible8(s8);
           if (!feas) continue;
-          const lb = Math.max(edgeLookup(rankPerm12(feas.rel) >>> 1),
+          const lb = Math.max(edgeExact(rankPerm12(feas.rel) >>> 1),
             cpDist[cpIndexOf(feas.masks[0], feas.masks[1], feas.masks[2], feas.bit)]);
           const total = c.head.length + br.length;
           cands.push({ head: c.head, br, s8, total, lb });
@@ -1737,10 +1844,18 @@ const TPR4 = (() => {
     const seenRed = new Set();
     const t0 = Date.now();
     const softMs = opts.softMs || 6000;
-    const tried = Math.min(cands.length, opts.tries || 3);
+    const tried = Math.min(cands.length, opts.tries || 8);
+    let bestLen = Infinity;
     for (let i = 0; i < tried; i++) {
-      if (Date.now() - t0 > softMs && (out.length || opts.bailEmpty)) break;
       const cand = cands[i];
+      // Branch and bound on the finished length. cands are sorted by
+      // total + lb, and lb is an admissible lower bound on this head's
+      // phase 3, so once the best solution in hand beats what this head could
+      // possibly yield, no later head can win either. The +2 absorbs seam
+      // cancellation, which can make a cleaned solution shorter than the sum
+      // of its parts.
+      if (out.length && cand.total + cand.lb >= bestLen + 2) break;
+      if (Date.now() - t0 > softMs && (out.length || opts.bailEmpty)) break;
       const r = deepSolve3(cand.s8, {
         nodeCap: opts.nodeCap || 30e6, solutions: opts.solutions || 3, extraNodes: opts.extraNodes,
         timeCapMs: opts.p3TimeCapMs,
@@ -1749,7 +1864,11 @@ const TPR4 = (() => {
       for (const sol of r.solutions) {
         const moves = C4.cleanAlg4(cand.head.concat(cand.br, sol));
         const key = moves.join(' ');
-        if (!seenRed.has(key)) { seenRed.add(key); out.push(moves); }
+        if (!seenRed.has(key)) {
+          seenRed.add(key);
+          out.push(moves);
+          if (moves.length < bestLen) bestLen = moves.length;
+        }
       }
     }
     if (!out.length) return null;
