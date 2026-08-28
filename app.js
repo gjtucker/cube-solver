@@ -1773,8 +1773,16 @@
   function updateTrack(fr, n, now) {
     const small = SCAN.downsample2(fr.px);
     const t = scan.track;
-    const prefer = t ? { x: t.cx / 2, y: t.cy / 2 } : { x: small.width / 2, y: small.height / 2 };
-    const det = SCAN.detectFace(small, n, { prefer, limits: SCAN.liveLimits(small.width, small.height) });
+    // acquisition is anchored to the on-screen guide square (mapped into
+    // detector coordinates); once locked, to the track itself, so the cube
+    // may drift or come closer without dropping the lock
+    const g = screenToSample(guideRect(), fr.f);
+    const prefer = t
+      ? { x: t.cx / 2, y: t.cy / 2 }
+      : { x: (g.x + g.size / 2) / 2, y: (g.y + g.size / 2) / 2 };
+    const limits = SCAN.liveLimits(small.width, small.height,
+      { guideSize: g.size / 2, lockedSize: t ? t.size / 2 : 0 });
+    const det = SCAN.detectFace(small, n, { prefer, limits });
     scan.track = scan.tracker.update(det && {
       cx: det.cx * 2, cy: det.cy * 2, size: det.size * 2, angle: det.angle,
       count: det.count, total: det.total, single: det.single,
@@ -1955,7 +1963,7 @@
         statusKind = 'ok';
       } else if (!tracked) {
         state = 'searching';
-        statusText = now - scan.startedAt > 1500 ? '🔍 Looking for the cube — hold it flat, facing the camera' : '🔍 Looking for the cube…';
+        statusText = now - scan.startedAt > 1500 ? '🔍 Looking for the cube — fill the dashed square, flat and straight' : '🔍 Looking for the cube…';
       } else if (gates) {
         state = 'capturing';
         statusText = 'Hold still…';

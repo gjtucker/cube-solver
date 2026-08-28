@@ -242,12 +242,13 @@ function makeScenarios(seed) {
   const rand = rng(seed);
   const out = [];
   const minDim = Math.min(W, H);
-  // the live scanner enforces an acquisition allowance (SCAN.liveLimits):
-  // near the guide square, at least ~1/5 of the frame, tilted < 25°. The
-  // should-lock scenarios stay inside it; a separate out-of-allowance set
-  // below verifies those are refused rather than snapped to.
-  const scales = [0.25, 0.32, 0.42, 0.55, 0.7];
-  const angles = [0, 6, 12, 18, 23];
+  // the live scanner enforces a tight acquisition allowance (SCAN.liveLimits):
+  // near the guide-square centre, within ±20% of the guide size (default
+  // 0.55·minDim, so sizes 0.44–0.66), tilted < 15°. The should-lock scenarios
+  // stay inside it; a separate out-of-allowance set below verifies everything
+  // else is refused rather than snapped to.
+  const scales = [0.45, 0.5, 0.55, 0.6, 0.65];
+  const angles = [0, 4, 8, 11, 14];
   const backgrounds = ['gray', 'dark', 'wood', 'cluttered', 'mosaic', 'tilewall'];
   const clutterScene = () => clutterRects(rand);
   for (const n of [3, 4, 2]) {
@@ -257,10 +258,10 @@ function makeScenarios(seed) {
           for (let variant = 0; variant < 3; variant++) {
             const size = scale * minDim;
             const solved = variant === 2 && rand() < 0.5;
-            // inside the acquisition allowance: within ~0.3·minDim of the
-            // guide-square centre (liveLimits allows 0.42) and fully in frame
+            // inside the acquisition allowance: within ~0.12·minDim of the
+            // guide-square centre (liveLimits allows ~0.14) and fully in frame
             const reach = (size * Math.SQRT2) / 2;
-            const maxOff = Math.max(1, Math.min(minDim * 0.3, W * 0.45 - reach, H * 0.45 - reach));
+            const maxOff = Math.max(1, Math.min(minDim * 0.12, W * 0.45 - reach, H * 0.45 - reach));
             const glareOn = variant >= 1 && rand() < 0.5;
             const offR = rand() * maxOff, offT = rand() * Math.PI * 2;
             const cx = W / 2 + Math.cos(offT) * offR;
@@ -303,19 +304,19 @@ function makeScenarios(seed) {
     }
   }
   // out-of-allowance: perfectly real cubes that violate the acquisition
-  // allowance — tiny in frame, far off-centre, or heavily tilted. The
-  // scanner must refuse these (the UI asks the user to centre/straighten)
-  // rather than snap a box onto them.
-  for (const kind of ['small', 'far', 'tilted']) {
+  // allowance — too small or too big for the guide, off-centre, or tilted
+  // past the limit. The scanner must refuse these (the UI asks the user to
+  // centre/resize/straighten) rather than snap a box onto them.
+  for (const kind of ['small', 'big', 'far', 'tilted']) {
     for (const background of ['gray', 'wood', 'cluttered']) {
       for (let i = 0; i < 6; i++) {
-        const scale = kind === 'small' ? 0.13 : 0.35;
+        const scale = kind === 'small' ? 0.30 : kind === 'big' ? 0.75 : 0.55;
         const size = scale * minDim;
-        const angleDeg = kind === 'tilted' ? 33 + rand() * 8 : rand() * 12;
+        const angleDeg = kind === 'tilted' ? 21 + rand() * 10 : rand() * 8;
         const cx = kind === 'far'
-          ? W / 2 + (rand() < 0.5 ? -1 : 1) * minDim * (0.52 + rand() * 0.1)
-          : W / 2 + (rand() - 0.5) * 40;
-        const cy = H / 2 + (rand() - 0.5) * 30;
+          ? W / 2 + (rand() < 0.5 ? -1 : 1) * minDim * (0.25 + rand() * 0.2)
+          : W / 2 + (rand() - 0.5) * 30;
+        const cy = H / 2 + (rand() - 0.5) * 24;
         out.push({
           n: 3, scale, angleDeg, background, solved: false, hasCube: true, oob: kind,
           clutterRects: background === 'cluttered' ? clutterScene() : null,

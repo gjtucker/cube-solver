@@ -64,8 +64,10 @@ export function makeCorpusScenarios(seed, faces, W, H) {
   const rand = mulberry32(seed);
   const minDim = Math.min(W, H);
   const out = [];
-  const scales = [0.3, 0.45, 0.62];
-  const angles = [0, 9, 19];
+  // stay inside the live acquisition allowance (SCAN.liveLimits):
+  // sizes within ±20% of the 0.55·minDim guide, tilt under 15°
+  const scales = [0.45, 0.55, 0.65];
+  const angles = [0, 7, 13];
   const backgrounds = ['gray', 'dark', 'wood', 'cluttered'];
   for (const face of faces) {
     for (const scale of scales) {
@@ -73,7 +75,7 @@ export function makeCorpusScenarios(seed, faces, W, H) {
         for (const background of backgrounds) {
           const size = scale * minDim;
           const reach = (size * Math.SQRT2) / 2;
-          const maxOff = Math.max(1, Math.min(minDim * 0.3, W * 0.45 - reach, H * 0.45 - reach));
+          const maxOff = Math.max(1, Math.min(minDim * 0.12, W * 0.45 - reach, H * 0.45 - reach));
           const offR = rand() * maxOff, offT = rand() * Math.PI * 2;
           const glareOn = rand() < 0.3;
           out.push({
