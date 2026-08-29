@@ -1850,7 +1850,10 @@
       ctx.beginPath(); ctx.moveTo(-s / 2 + i * cs, -s / 2); ctx.lineTo(-s / 2 + i * cs, s / 2); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(-s / 2, -s / 2 + i * cs); ctx.lineTo(s / 2, -s / 2 + i * cs); ctx.stroke();
     }
-    ctx.globalAlpha = 1;
+    // while searching (dashed guide, nothing locked) the label dots are a
+    // best guess over whatever is under the guide — possibly two faces of a
+    // rotated cube, or the table — so fade them rather than present a read
+    ctx.globalAlpha = dashed ? 0.35 : 1;
     if (labels) {
       labels.forEach((l, i) => {
         // screen columns run the other way when the preview is mirrored
@@ -1989,7 +1992,14 @@
         statusKind = 'ok';
       } else if (!tracked) {
         state = 'searching';
-        statusText = now - scan.startedAt > 1500 ? '🔍 Looking for the cube — fill the dashed square, flat and straight' : '🔍 Looking for the cube…';
+        // several distinct cube colours under the guide but no lattice lock:
+        // the cube is THERE but turned so the camera sees more than one face
+        // (or held at an angle) — say what to change, not just "looking"
+        const distinct = new Set(labels.filter((l) => l !== null)).size;
+        statusText = now - scan.startedAt <= 1500 ? '🔍 Looking for the cube…'
+          : allKnown && distinct >= 2
+            ? '🔍 Almost — turn the cube so ONE face, flat to the camera, fills the square'
+            : '🔍 Looking for the cube — fill the dashed square, flat and straight';
       } else if (gates) {
         state = 'capturing';
         statusText = 'Hold still…';
