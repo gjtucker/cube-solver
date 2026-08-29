@@ -1561,7 +1561,7 @@
     active: false, scanMode: '3', step: 0, captures: [], signatures: [],
     stream: null, raf: 0, stable: 0, lastSig: '', cooldownUntil: 0,
     sampleCanvas: document.createElement('canvas'),
-    softPoses: [], softDet: null,
+    softPoses: [], softDet: null, guideSnap: null,
     detectCanvas: document.createElement('canvas'),
     photo: { img: null, px: null, rect: null, drag: null },
     live: false,
@@ -1617,7 +1617,7 @@
   async function startScan() {
     scan.scanMode = mode;
     scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
-    scan.softPoses = []; scan.softDet = null; scan.refusal = null;
+    scan.softPoses = []; scan.softDet = null; scan.refusal = null; scan.guideSnap = null;
     scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
     scan.stableSince = 0; scan.movedSinceCapture = false; scan.lastDetAt = 0;
     scan.track = null; scan.tracker.reset(); scan.frame = 0; scan.acc = null;
@@ -1927,22 +1927,48 @@
       // under handheld jiggle its pose lags the cube — snap the sampling rect
       // to the current frame before reading colours, so samples and the drawn
       // grid stick to the stickers themselves. While unlocked the snap starts
-      // from the guide square: the drawn grid hugs whatever cube-like thing
-      // sits under it, and its steadiness feeds the soft lock below.
-      const rect = SCAN.snapRect(fr.px, currentRect(fr.f), n);
+      // from last frame's pose, is clamped to the guide square's
+      // neighbourhood, and is low-pass filtered: on a face with little to
+      // align on (a solid colour) the raw snap chases background edges and
+      // the grid jitters — pinned and smoothed, it stays calm.
+      let rect;
+      if (tracked) {
+        scan.guideSnap = null;
+        rect = SCAN.snapRect(fr.px, currentRect(fr.f), n);
+      } else {
+        const g0 = currentRect(fr.f);
+        const r = SCAN.snapRect(fr.px, scan.guideSnap || g0, n);
+        const cl = (v, c, d) => Math.min(c + d, Math.max(c - d, v));
+        const cx = cl(r.x + r.size / 2, g0.x + g0.size / 2, g0.size * 0.1);
+        const cy = cl(r.y + r.size / 2, g0.y + g0.size / 2, g0.size * 0.1);
+        const size = cl(r.size, g0.size, g0.size * 0.1);
+        const angle = cl(r.angle || 0, 0, 0.07);
+        const p = scan.guideSnap || g0, a = 0.35;
+        rect = scan.guideSnap = {
+          x: p.x + (cx - size / 2 - p.x) * a,
+          y: p.y + (cy - size / 2 - p.y) * a,
+          size: p.size + (size - p.size) * a,
+          angle: (p.angle || 0) + (angle - (p.angle || 0)) * a,
+        };
+      }
       const res = SCAN.sampleGrid(fr.px, rect, n);
       const labels = res.cells.map((c) => SCAN.hueClass(c));
       const allKnown = labels.every((l) => l !== null);
       const calm = res.cellVar.filter((x) => x < 1100).length >= n * n - 1;
       const bordered = res.borderDarkRatio >= 0.3;
+      // a real face fills the rect with the table/room visible just beyond
+      // its edge — the object-vs-wall evidence, and the only evidence a
+      // SOLID single-colour gapless face (solved cube) can offer
+      const faceMean = [0, 1, 2].map((k) => res.cells.reduce((s, c) => s + c[k], 0) / res.cells.length);
+      const outer = SCAN.outerDiffers(fr.px, rect, faceMean);
       // guide-anchored soft lock: some real cubes defeat the lattice detector
       // (gapless tiles merge into monochrome blobs; a white column on a light
-      // table never segments) — but a deliberately aimed cube shows up as a
-      // STEADY snapped pose with calm, fully-classified, multi-colour
-      // samples. Six consecutive steady frames forge a plain-face detection
-      // for the tracker (consumed in updateTrack; auto-capture from such a
-      // lock still demands border/notch evidence, like any plain-face lock).
-      if (!tracked && allKnown && calm && new Set(labels).size >= 2) {
+      // table never segments; a solid face has no lattice at all) — but a
+      // deliberately aimed cube shows up as a STEADY snapped pose with calm,
+      // fully-classified samples that are either multi-colour or clearly an
+      // object against the background. Six consecutive steady frames forge a
+      // plain-face detection for the tracker (consumed in updateTrack).
+      if (!tracked && allKnown && calm && (new Set(labels).size >= 2 || outer >= 0.5)) {
         scan.softPoses.push({ cx: rect.x + rect.size / 2, cy: rect.y + rect.size / 2, size: rect.size, angle: rect.angle || 0 });
         if (scan.softPoses.length > 6) scan.softPoses.shift();
         if (scan.softPoses.length === 6) {
@@ -1994,7 +2020,12 @@
       // single-colour face) still has to show them. The untracked fallback
       // guide square NEVER auto-captures — manual capture covers it.
       const latticeLock = tracked && !scan.track.single;
-      const gates = allKnown && calm && !dup && centerOK && tracked && (latticeLock || bordered);
+      // capture evidence, strongest first: a sticker-lattice lock; visible
+      // seam/notch borders; or (for solid gapless faces that have neither)
+      // clear outer contrast against the background — that last tier pays an
+      // extended hold before auto-capture fires
+      const softEv = !latticeLock && !bordered && outer >= 0.5;
+      const gates = allKnown && calm && !dup && centerOK && tracked && (latticeLock || bordered || softEv);
       // scan.lastSig anchors the current stable streak: frames may drift one
       // cell from the anchor without resetting the countdown
       if (gates && scan.stable > 0 && ham(sig, scan.lastSig) <= 1) {
@@ -2019,7 +2050,7 @@
       // that moment shows "captured ✓" plus the next rotation instruction,
       // which is exactly when the user decides how to move the cube.
       const justCaptured = scan.captures.length > 0 && !scan.movedSinceCapture;
-      const HOLD_MS = 280, MIN_FRAMES = 4;
+      const HOLD_MS = softEv ? 560 : 280, MIN_FRAMES = softEv ? 6 : 4;
       const held = scan.stable >= MIN_FRAMES && now - scan.stableSince >= HOLD_MS;
       const progress = scan.stable > 0 ? Math.min(1, Math.min(scan.stable / MIN_FRAMES, (now - scan.stableSince) / HOLD_MS)) : 0;
       let state, statusText, statusKind = '';
@@ -2394,7 +2425,7 @@
       await waitIdle(); exitPlayback(); clearMsg();
       scan.scanMode = mode;
       scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
-    scan.softPoses = []; scan.softDet = null; scan.refusal = null;
+    scan.softPoses = []; scan.softDet = null; scan.refusal = null; scan.guideSnap = null;
       scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
       scan.track = null; scan.tracker.reset(); scan.frame = 0; scan.acc = null;
       scan.stableSince = 0; scan.movedSinceCapture = false; scan.lastDetAt = 0;
@@ -2411,7 +2442,7 @@
       o = o || {};
       scan.scanMode = mode;
       scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
-    scan.softPoses = []; scan.softDet = null; scan.refusal = null;
+    scan.softPoses = []; scan.softDet = null; scan.refusal = null; scan.guideSnap = null;
       scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
       scan.track = null; scan.tracker.reset(); scan.frame = 0; scan.acc = null;
       scan.stableSince = 0; scan.movedSinceCapture = false; scan.lastDetAt = 0;
