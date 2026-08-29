@@ -1804,7 +1804,11 @@
       : { x: (g.x + g.size / 2) / 2, y: (g.y + g.size / 2) / 2 };
     const limits = SCAN.liveLimits(small.width, small.height,
       { guideSize: g.size / 2, lockedSize: t ? t.size / 2 : 0 });
-    const det = SCAN.detectFace(small, n, { prefer, limits });
+    const ref = {};
+    const det = SCAN.detectFace(small, n, { prefer, limits, refusals: ref });
+    // a cube-like candidate was seen but refused by the allowance — keep the
+    // reason briefly so the status can say what to adjust
+    scan.refusal = !det && ref.refused ? { ...ref.refused, at: now, limits } : (det ? null : scan.refusal);
     scan.track = scan.tracker.update(det && {
       cx: det.cx * 2, cy: det.cy * 2, size: det.size * 2, angle: det.angle,
       count: det.count, total: det.total, single: det.single,
@@ -1992,14 +1996,24 @@
         statusKind = 'ok';
       } else if (!tracked) {
         state = 'searching';
-        // several distinct cube colours under the guide but no lattice lock:
-        // the cube is THERE but turned so the camera sees more than one face
-        // (or held at an angle) — say what to change, not just "looking"
+        // a cube-like candidate refused by the acquisition allowance beats
+        // every other guess about what is wrong — it says exactly what to
+        // adjust. Next best: several distinct cube colours under the guide
+        // but no lattice (the cube is there but turned, showing two faces).
+        const REFUSE_MSG = {
+          far: '🎯 Found it — centre the cube in the dashed square',
+          small: '🤏 Found it — a little closer, fill the dashed square',
+          big: '↕ Found it — a little farther back, fit it inside the square',
+          tilted: '📐 Found it — straighten the cube (hold it square, not diamond)',
+        };
+        const refusal = scan.refusal && now - scan.refusal.at < 900 ? scan.refusal : null;
         const distinct = new Set(labels.filter((l) => l !== null)).size;
-        statusText = now - scan.startedAt <= 1500 ? '🔍 Looking for the cube…'
-          : allKnown && distinct >= 2
-            ? '🔍 Almost — turn the cube so ONE face, flat to the camera, fills the square'
-            : '🔍 Looking for the cube — fill the dashed square, flat and straight';
+        statusText = refusal ? REFUSE_MSG[refusal.why]
+          : now - scan.startedAt <= 1500 ? '🔍 Looking for the cube…'
+            : allKnown && distinct >= 2
+              ? '🔍 Almost — turn the cube so ONE face, flat to the camera, fills the square'
+              : '🔍 Looking for the cube — fill the dashed square, flat and straight';
+        if (refusal) statusKind = 'warn';
       } else if (gates) {
         state = 'capturing';
         statusText = 'Hold still…';
@@ -2045,6 +2059,14 @@
         drawPill(ctx,
           `trk${b(tracked)} lat${b(latticeLock)} known${b(allKnown)} calm${b(calm)} brd${b(bordered)} ctr${b(centerOK)} dup${dup ? '!' : '·'} ${scan.stable}f/${Math.round(now - scan.stableSince)}ms`,
           gcx, Math.min(draw.height - 118, gcy + s * 0.72 + 34));
+        const rf = scan.refusal;
+        if (!tracked && rf && now - rf.at < 900) {
+          // the candidate the allowance refused, vs the allowance itself
+          const L = rf.limits;
+          drawPill(ctx,
+            `ref:${rf.why} sz${Math.round(rf.size)}[${Math.round(L.minSize)}-${Math.round(L.maxSize)}] d${Math.round(rf.dist)}/${Math.round(L.maxDist)} a${Math.round((rf.angle * 180) / Math.PI)}°/${Math.round((L.maxTilt * 180) / Math.PI)}°`,
+            gcx, Math.min(draw.height - 88, gcy + s * 0.72 + 64));
+        }
       }
       if (held && now >= scan.cooldownUntil) {
         const k = scan.acc.n;

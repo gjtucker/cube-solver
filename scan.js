@@ -551,13 +551,23 @@ const SCAN = (() => {
     // {maxDist} is measured from `prefer`, which is the current track while
     // locked, so a cube may drift once acquired without losing the lock.
     const lim = opts.limits || null;
+    // when a candidate is refused by the allowance, remember the biggest one
+    // and why (opts.refusals) — the UI turns that into "a little closer /
+    // straighten / centre it" instead of a blank "looking for the cube"
     const okLimits = (cx, cy, size, angle) => {
       if (!lim) return true;
-      if (lim.maxDist && Math.hypot(cx - pref.x, cy - pref.y) > lim.maxDist) return false;
-      if (lim.minSize && size < lim.minSize) return false;
-      if (lim.maxSize && size > lim.maxSize) return false;
-      if (lim.maxTilt !== undefined && Math.abs(angle || 0) > lim.maxTilt) return false;
-      return true;
+      const dist = Math.hypot(cx - pref.x, cy - pref.y);
+      const why = lim.maxDist && dist > lim.maxDist ? 'far'
+        : lim.minSize && size < lim.minSize ? 'small'
+        : lim.maxSize && size > lim.maxSize ? 'big'
+        : lim.maxTilt !== undefined && Math.abs(angle || 0) > lim.maxTilt ? 'tilted'
+        : null;
+      if (!why) return true;
+      const R = opts.refusals;
+      if (R && (!R.refused || size > R.refused.size)) {
+        R.refused = { why, cx, cy, size, angle: angle || 0, dist };
+      }
+      return false;
     };
     const solid = blobs.filter((b) => b.compact > 0.72 && b.compact < 1.3 && b.fill > 0.4);
     const singles = solid.filter((b) => b.elong <= 1.45);
