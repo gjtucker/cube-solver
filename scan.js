@@ -99,179 +99,216 @@ const SCAN = (() => {
     ]));
   }
 
-  // Local registration: starting from `rect` (the tracker's smoothed pose, or
-  // the guide square), walk translation, size and angle a short, capped
-  // distance to the pose that best aligns the sampling grid with the actual
-  // cube. Two signals score a pose, both already computed by sampleGrid:
-  // patches centred in stickers have low interior variance, and the internal
-  // grid lines land on seams/notches (darker than the cells). This is what
-  // absorbs handheld jiggle: the detector+tracker only run every few frames
-  // and smooth their answer, while this runs on the CURRENT frame right
-  // before the colours are read, so the samples land dead-centre even while
-  // the pose estimate lags a moving hand. Cost ≈ two dozen sampleGrid calls.
-  // Continuous alignment score for snapRect. sampleGrid's own outputs are
-  // deliberately plateau-shaped (binary border counts, patches that stay
-  // well inside a sticker), which is right for GATING but useless for
-  // OPTIMIZING — the score must slope over exactly the few-pixel errors the
-  // snap removes. The signal: each internal boundary point, probed just
-  // either side of the line, should MATCH its own adjacent cell's mean
-  // colour. That is self-normalizing (each face grades against its own
-  // colours), works for stickered (a misplaced probe lands in the dark seam)
-  // and gapless (it lands in the differently-coloured neighbour tile), and
-  // punishes size/angle error because misplaced lines put both probes in
-  // the same cell. Interior lattice nodes add a darkness term — the corner
-  // notches sit exactly there on both cube styles.
-  function snapScore(px, rect, n) {
-    const cs = rect.size / n;
-    const ang = rect.angle || 0, ca = Math.cos(ang), sa = Math.sin(ang);
-    const ccx = rect.x + rect.size / 2, ccy = rect.y + rect.size / 2;
-    const at = (lx, ly) => {
-      const dx = lx - rect.size / 2, dy = ly - rect.size / 2;
-      return [ccx + ca * dx - sa * dy, ccy + sa * dx + ca * dy];
-    };
-    const rgbAt = (lx, ly) => {
-      const [X0, Y0] = at(lx, ly);
-      const X = Math.round(X0), Y = Math.round(Y0);
-      if (X < 0 || Y < 0 || X >= px.width || Y >= px.height) return null;
-      const o = (Y * px.width + X) * 4;
+  // ---------- live registration: the whole live-scanner fit ----------
+  // The live problem is deliberately simple: the user holds a cube-coloured
+  // square roughly on the fixed guide square, so the cube's four edges are
+  // strong colour transitions within a small window of the guide's four
+  // sides. Two passes: an axis-aligned scan estimates the tilt from the
+  // slope of the edge hits, then the same scan runs in the tilted frame for
+  // clean positions. Each side must be a REAL edge — strong, with its five
+  // hits collinear and the slope inside the tilt budget — and the fit's
+  // corners must have background just outside them (that is what separates
+  // a cube filling the guide from the interior seams of one held too close).
+  // Deterministic for a static scene: candidates sit on a fixed grid.
+  function registerRect(px, guide, prev) {
+    const S = guide.size;
+    const base = prev || guide;
+    const win = S * 0.16;
+    const probe = Math.max(3, S * 0.035);
+    const rgbAt = (X, Y) => {
+      const x = Math.round(X), y = Math.round(Y);
+      if (x < 1 || y < 1 || x >= px.width - 1 || y >= px.height - 1) return null;
+      const o = (y * px.width + x) * 4;
       return [px.data[o], px.data[o + 1], px.data[o + 2]];
     };
-    // per-cell mean colour from a small centre patch
-    const means = [];
-    let cellLum = 0, cells = 0;
-    for (let r = 0; r < n; r++) {
-      for (let c = 0; c < n; c++) {
-        let sr = 0, sg = 0, sb = 0, cnt = 0;
-        for (const dy of [-0.15, 0, 0.15]) {
-          for (const dx of [-0.15, 0, 0.15]) {
-            const p = rgbAt((c + 0.5 + dx) * cs, (r + 0.5 + dy) * cs);
-            if (p) { sr += p[0]; sg += p[1]; sb += p[2]; cnt++; }
-          }
-        }
-        means.push(cnt ? [sr / cnt, sg / cnt, sb / cnt] : null);
-        if (cnt) { cellLum += (sr + sg + sb) / (3 * cnt); cells++; }
+    const avg3 = (X, Y, tx, ty) => {
+      let r = 0, g = 0, b = 0, c = 0;
+      for (const t of [-probe, 0, probe]) {
+        const q = rgbAt(X + tx * t, Y + ty * t);
+        if (q) { r += q[0]; g += q[1]; b += q[2]; c++; }
       }
-    }
-    if (!cells) return -1e9;
-    const l1 = (p, m) => (Math.abs(p[0] - m[0]) + Math.abs(p[1] - m[1]) + Math.abs(p[2] - m[2])) / 3;
-    let mismatch = 0, probes = 0;
-    // probes at three distances either side of each line: successive probes
-    // cross into the seam/neighbour at successively smaller pose errors, so
-    // the score slopes in steps instead of one distant cliff — that is what
-    // gives the weak-lever parameters (size, angle) a usable gradient
-    const dists = [cs * 0.09, cs * 0.15, cs * 0.21];
-    for (let i = 1; i < n; i++) {
-      for (let j = 0; j < n; j++) {
-        for (const f of [0.2, 0.5, 0.8]) {
-          for (const horiz of [false, true]) {
-            // vertical line i: cells (j, i-1) | (j, i); horizontal line i: cells (i-1, j) | (i, j)
-            const [lx, ly] = horiz ? [(j + f) * cs, i * cs] : [i * cs, (j + f) * cs];
-            const mA = horiz ? means[(i - 1) * n + j] : means[j * n + (i - 1)];
-            const mB = horiz ? means[i * n + j] : means[j * n + i];
-            for (const d of dists) {
-              const c1 = rgbAt(lx - (horiz ? 0 : d), ly - (horiz ? d : 0));
-              const c2 = rgbAt(lx + (horiz ? 0 : d), ly + (horiz ? d : 0));
-              if (c1 && mA) { mismatch += l1(c1, mA); probes++; }
-              if (c2 && mB) { mismatch += l1(c2, mB); probes++; }
+      return c ? [r / c, g / c, b / c] : null;
+    };
+    const diff = (a, b) => a && b
+      ? (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2])) / 3 : 0;
+    const MAX_TILT = 0.35;   // ~20°: beyond this the user is asked to straighten
+    const cx0 = base.x + base.size / 2, cy0 = base.y + base.size / 2;
+    const half = base.size / 2;
+    // one scan set in a frame rotated by `ang` about the base centre.
+    // Local coords: u across the side being measured, v along it.
+    const scan = (ang) => {
+      const ca = Math.cos(ang), sa = Math.sin(ang);
+      const side = (u0, vertical, outerFirst) => {
+        // per scan line, EVERY strong transition is a candidate (outermost
+        // alone is clutter-bait; strongest alone is seam-bait) — then a tiny
+        // RANSAC picks the straight line supported by the most scan lines,
+        // preferring the outermost among equally-supported lines. A cube
+        // edge always aligns across the lines; a clutter rect rarely does.
+        const lines = [];
+        for (const f of [-0.3, -0.15, 0, 0.15, 0.3]) {
+          const v = f * base.size;
+          const u1 = Math.round(u0 - win), prof = [];
+          let best = 0;
+          for (let u = u1; u <= u0 + win; u++) {
+            const X = vertical ? cx0 + ca * u - sa * v : cx0 + ca * v - sa * u;
+            const Y = vertical ? cy0 + sa * u + ca * v : cy0 + sa * v + ca * u;
+            const tx = vertical ? -sa : ca, ty = vertical ? ca : sa;
+            const nx = vertical ? ca : -sa, ny = vertical ? sa : ca;
+            const d = diff(avg3(X - nx * probe, Y - ny * probe, tx, ty), avg3(X + nx * probe, Y + ny * probe, tx, ty));
+            prof.push(d);
+            if (d > best) best = d;
+          }
+          const T = Math.max(best * 0.55, 30);
+          const cands = [];
+          let a0 = -1, mx = 0;
+          for (let i = 0; i <= prof.length; i++) {
+            if (i < prof.length && prof[i] >= T) {
+              if (a0 < 0) { a0 = i; mx = prof[i]; } else mx = Math.max(mx, prof[i]);
+            } else if (a0 >= 0) {
+              cands.push({ at: u1 + (a0 + i - 1) / 2, strength: mx });
+              a0 = -1;
             }
           }
+          lines.push({ v, cands });
         }
-      }
-    }
-    // interior lattice nodes: darker than the cells when aligned (seam
-    // crossings on stickered cubes, corner notches on gapless ones)
-    let nodeDark = 0, nodes = 0;
-    for (let i = 1; i < n; i++) {
-      for (let j = 1; j < n; j++) {
-        const p = rgbAt(i * cs, j * cs);
-        if (p) { nodeDark += cellLum / cells - (p[0] + p[1] + p[2]) / 3; nodes++; }
-      }
-    }
-    // the rect's own outer boundary: just-inside points must match their edge
-    // cell, just-outside points must NOT. This is the only alignment signal a
-    // SOLID single-colour face offers (its interior gives the probes above
-    // nothing), and it sharpens edge alignment for every other face too.
-    let edge = 0, en = 0;
-    const eo = cs * 0.16;
-    for (const f of [0.2, 0.5, 0.8]) {
-      const idx = Math.min(n - 1, Math.floor(f * n));
-      for (const [inPt, outPt, m] of [
-        [[eo, f * rect.size], [-eo, f * rect.size], means[idx * n]],
-        [[rect.size - eo, f * rect.size], [rect.size + eo, f * rect.size], means[idx * n + (n - 1)]],
-        [[f * rect.size, eo], [f * rect.size, -eo], means[idx]],
-        [[f * rect.size, rect.size - eo], [f * rect.size, rect.size + eo], means[(n - 1) * n + idx]],
-      ]) {
-        if (!m) continue;
-        const pIn = rgbAt(inPt[0], inPt[1]), pOut = rgbAt(outPt[0], outPt[1]);
-        if (pIn && pOut) { edge += Math.min(l1(pOut, m), 90) - l1(pIn, m); en++; }
-      }
-    }
-    return (probes ? -mismatch / probes : 0)
-      + (nodes ? (nodeDark / nodes) * 0.3 : 0)
-      + (en ? (edge / en) * 0.5 : 0);
-  }
-
-  function snapRect(px, rect, n) {
-    const a0 = rect.angle || 0;
-    // the anchor penalty keeps a signal-less pose (a solved gapless face has
-    // nothing to align on) from drifting across the score's flat plateau —
-    // real alignment gradients are an order of magnitude steeper than this
-    const score = (r) => snapScore(px, r, n)
-      - 700 * ((r.x - rect.x) ** 2 + (r.y - rect.y) ** 2) / rect.size ** 2
-      - 700 * ((r.size - rect.size) / rect.size) ** 2
-      - 250 * (r.angle - a0) ** 2;
-    let best = { x: rect.x, y: rect.y, size: rect.size, angle: a0 };
-    let bestS = score(best);
-    const trial = (r) => {
-      // caps: refinement polishes, it must never wander to a different fit
-      if (Math.hypot(r.x - rect.x, r.y - rect.y) > rect.size * 0.05) return false;
-      if (r.size < rect.size * 0.94 || r.size > rect.size * 1.06) return false;
-      if (Math.abs(wrapAngle(r.angle - a0)) > 0.07) return false;
-      const s = score(r);
-      if (s > bestS + 1e-9) { bestS = s; best = r; return true; }
-      return false;
+        const all = [];
+        lines.forEach((ln, li) => ln.cands.forEach((c) => all.push({ li, v: ln.v, ...c })));
+        if (!all.length) return { pos: u0, strength: 0, slope: 0 };
+        const band = Math.max(3, S * 0.03);
+        let bestFit = null;
+        for (let i = 0; i < all.length; i++) {
+          for (let j = i + 1; j < all.length; j++) {
+            if (all[i].li === all[j].li) continue;
+            const slope = (all[j].at - all[i].at) / (all[j].v - all[i].v);
+            if (Math.abs(slope) > 0.6) continue;
+            const a0l = all[i].at - slope * all[i].v;
+            // best-matching candidate per scan line
+            const per = new Map();
+            for (const c of all) {
+              const r = Math.abs(c.at - (a0l + slope * c.v));
+              if (r <= band && (!per.has(c.li) || r < per.get(c.li).r)) per.set(c.li, { c, r });
+            }
+            if (per.size < 3) continue;
+            const inl = [...per.values()].map((e) => e.c);
+            const mv = inl.reduce((a, c) => a + c.v, 0) / inl.length;
+            const ma = inl.reduce((a, c) => a + c.at, 0) / inl.length;
+            let sxy = 0, sxx = 0;
+            for (const c of inl) { sxy += (c.v - mv) * (c.at - ma); sxx += (c.v - mv) ** 2; }
+            const b2 = sxx ? sxy / sxx : 0;
+            const pos = ma - b2 * mv;
+            const outer = outerFirst ? -pos : pos;
+            const strength = inl.map((c) => c.strength).sort((x, y) => x - y)[inl.length >> 1];
+            const key = per.size * 1e6 + outer;
+            if (!bestFit || key > bestFit.key) bestFit = { key, pos, slope: b2, strength };
+          }
+        }
+        if (!bestFit) return { pos: u0, strength: 0, slope: 0 };
+        return { pos: bestFit.pos, strength: bestFit.strength, slope: bestFit.slope };
+      };
+      return { L: side(-half, true, true), R: side(half, true, false), T: side(-half, false, true), B: side(half, false, false) };
     };
-    for (const scale of [1, 0.4]) {          // coarse pass, then fine
-      const d = rect.size * 0.018 * scale, ds = rect.size * 0.02 * scale, da = 0.02 * scale;
-      let moved = true, guard = 0;
-      while (moved && guard++ < 5) {
-        moved = false;
-        for (const [dx, dy] of [[d, 0], [-d, 0], [0, d], [0, -d]]) {
-          moved = trial({ x: best.x + dx, y: best.y + dy, size: best.size, angle: best.angle }) || moved;
+    // pass 1 axis-aligned -> tilt estimate; pass 2 in the tilted frame
+    const s1 = scan(0);
+    const est = (s1.T.slope + s1.B.slope - s1.L.slope - s1.R.slope) / 4;
+    const ang = Math.min(MAX_TILT, Math.max(-MAX_TILT, Math.atan(est)));
+    const s2 = scan(ang);
+    const { L, R, T, B } = s2;
+    // axes disagreeing on size means one side latched onto an INTERIOR
+    // boundary (a face column that matches the background leaves its true
+    // edge contrast-free, so the colour boundary next to it is the only
+    // candidate). Demote the side whose replacement (opposite side plus the
+    // perpendicular size) recentres the fit closest to the guide — the user
+    // aimed the cube at the guide; use that.
+    {
+      const sh0 = R.pos - L.pos, sv0 = B.pos - T.pos;
+      if (L.strength && R.strength && T.strength && B.strength && Math.abs(sh0 - sv0) > S * 0.06) {
+        const dgx = guide.x + S / 2 - cx0, dgy = guide.y + S / 2 - cy0;
+        const gu = Math.cos(ang) * dgx + Math.sin(ang) * dgy;
+        const gv = -Math.sin(ang) * dgx + Math.cos(ang) * dgy;
+        const cands = [
+          { sd: L, u: R.pos - sv0 / 2, v: (T.pos + B.pos) / 2, pos: R.pos - sv0 },
+          { sd: R, u: L.pos + sv0 / 2, v: (T.pos + B.pos) / 2, pos: L.pos + sv0 },
+          { sd: T, u: (L.pos + R.pos) / 2, v: B.pos - sh0 / 2, pos: B.pos - sh0 },
+          { sd: B, u: (L.pos + R.pos) / 2, v: T.pos + sh0 / 2, pos: T.pos + sh0 },
+        ];
+        /** @type {{sd: {pos: number, strength: number}, pos: number, d: number}|null} */
+        let bestC = null;
+        for (const c of cands) {
+          const d = Math.hypot(c.u - gu, c.v - gv);
+          if (!bestC || d < bestC.d) bestC = { sd: c.sd, pos: c.pos, d };
         }
-        for (const s of [ds, -ds]) {
-          moved = trial({ x: best.x - s / 2, y: best.y - s / 2, size: best.size + s, angle: best.angle }) || moved;
-        }
-        for (const a of [da, -da]) {
-          moved = trial({ x: best.x, y: best.y, size: best.size, angle: best.angle + a }) || moved;
-        }
+        bestC.sd.pos = bestC.pos;
+        bestC.sd.strength = 0;
       }
     }
-    return best;
-  }
-
-  // Fraction of a ring of samples just OUTSIDE the rect that differ clearly
-  // from the face's mean colour. A real cube face fills the rect and the
-  // table/room shows just beyond its edge; a wall of one colour does not.
-  // This is the evidence that lets a SOLID single-colour face (solved cube,
-  // gapless, no seams to see) count as an object rather than a wall.
-  function outerDiffers(px, rect, mean) {
-    const ang = rect.angle || 0, ca = Math.cos(ang), sa = Math.sin(ang);
-    const ccx = rect.x + rect.size / 2, ccy = rect.y + rect.size / 2;
-    let diff = 0, tot = 0;
-    for (const [ux, uy] of [
-      [-0.62, -0.4], [-0.62, 0], [-0.62, 0.4], [0.62, -0.4], [0.62, 0], [0.62, 0.4],
-      [-0.4, -0.62], [0, -0.62], [0.4, -0.62], [-0.4, 0.62], [0, 0.62], [0.4, 0.62],
-    ]) {
-      const lx = ux * rect.size, ly = uy * rect.size;
-      const X = Math.round(ccx + ca * lx - sa * ly), Y = Math.round(ccy + sa * lx + ca * ly);
-      if (X < 0 || Y < 0 || X >= px.width || Y >= px.height) continue;
-      const o = (Y * px.width + X) * 4;
-      const d = Math.abs(px.data[o] - mean[0]) + Math.abs(px.data[o + 1] - mean[1]) + Math.abs(px.data[o + 2] - mean[2]);
-      if (d / 3 > 55) diff++;
-      tot++;
+    // a side that found no edge must not report the seed position — that
+    // anchors the fit to the guide and stops the window from ever walking
+    // onto an off-centre cube. Rebuild it from the opposite side plus the
+    // size measured on the perpendicular axis; it stays a weak side.
+    const sv = B.strength && T.strength ? B.pos - T.pos : 0;
+    const sh = R.strength && L.strength ? R.pos - L.pos : 0;
+    if (!L.strength && R.strength && sv) L.pos = R.pos - sv;
+    if (!R.strength && L.strength && sv) R.pos = L.pos + sv;
+    if (!T.strength && B.strength && sh) T.pos = B.pos - sh;
+    if (!B.strength && T.strength && sh) B.pos = T.pos + sh;
+    const size = ((R.pos - L.pos) + (B.pos - T.pos)) / 2;
+    // a side only counts if it looks like a real straight edge
+    const sideOK = (sd) => Math.abs(sd.slope) <= 0.09 ? sd.strength : 0;
+    const strengths = [sideOK(L), sideOK(R), sideOK(T), sideOK(B)].sort((a, b) => a - b);
+    let strength = strengths[1];   // 3 of 4 sides must be believable
+    // corner check: just outside the fitted corners must NOT look like the
+    // face just inside them — a cube held too close puts cube on both sides
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    const ucx = cx0 + ca * ((L.pos + R.pos) / 2) - sa * ((T.pos + B.pos) / 2);
+    const ucy = cy0 + sa * ((L.pos + R.pos) / 2) + ca * ((T.pos + B.pos) / 2);
+    let cornersOK = 0;
+    for (const [su, sv] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      const du = su * size / 2, dv = sv * size / 2;
+      const pin = rgbAt(ucx + ca * du * 0.8 - sa * dv * 0.8, ucy + sa * du * 0.8 + ca * dv * 0.8);
+      const pout = rgbAt(ucx + ca * du * 1.18 - sa * dv * 1.18, ucy + sa * du * 1.18 + ca * dv * 1.18);
+      if (!pout || diff(pin, pout) > 40) cornersOK++;
     }
-    return tot ? diff / tot : 0;
+    // >=2: an all-cube interior fit (cube held far too close) shows cube on
+    // both sides of every corner only when neighbouring tiles match, but a
+    // legitimate face may genuinely lose two corners (a white column on a
+    // white table). The capture gates (calm, all cells classify) are what
+    // keep a surviving interior fit from ever being captured.
+    if (cornersOK < 2) strength = 0;
+    // three-sided fits are ambiguous: "face whose fourth edge is invisible
+    // (white column on a white table)" and "fit hanging off a shifted cube"
+    // look locally identical. The difference lives FAR beyond the strong
+    // sides: saturated cube tiles continuing there mean the strong side was
+    // an interior seam, not the silhouette — refuse those.
+    if (strength > 0) {
+      const tileLike = (p) => {
+        if (!p) return false;
+        const mx = Math.max(p[0], p[1], p[2]), mn = Math.min(p[0], p[1], p[2]);
+        return mx > 64 && (mx - mn) / Math.max(1, mx) > 0.45;
+      };
+      const beyond = size * 0.75;
+      // the shifted cube's giveaway tiles sit beyond the side OPPOSITE the
+      // dead one — test only there, so colourful surroundings elsewhere
+      // (clutter) cannot veto a legitimate three-sided lock
+      for (const { dead, du, dv } of [
+        { dead: s2.L, du: beyond, dv: 0 }, { dead: s2.R, du: -beyond, dv: 0 },
+        { dead: s2.T, du: 0, dv: beyond }, { dead: s2.B, du: 0, dv: -beyond },
+      ]) {
+        if (dead.strength) continue;
+        let sat = 0;
+        for (const off of [-size * 0.25, 0, size * 0.25]) {
+          const u = du || off, v = dv || off;
+          if (tileLike(rgbAt(ucx + ca * u - sa * v, ucy + sa * u + ca * v))) sat++;
+        }
+        if (sat >= 2) { strength = 0; break; }
+      }
+    }
+    return {
+      x: ucx - size / 2,
+      y: ucy - size / 2,
+      size,
+      angle: ang + Math.atan((T.slope + B.slope - L.slope - R.slope) / 4),
+      strength,
+    };
   }
 
   // ---------- sampling a grid from raw pixel data ----------
@@ -589,31 +626,6 @@ const SCAN = (() => {
 
     if (opts.debug) opts.debug.tBlobs = performance.now() - T0;
     const pref = opts.prefer || { x: W / 2, y: H / 2 };
-    // hard acquisition limits (opts.limits): in live scanning the cube is
-    // roughly centred on the guide square, roughly upright, and reasonably
-    // big — a candidate far away, tiny, or heavily tilted is background, and
-    // refusing it outright beats letting a lattice-like wall win a fit.
-    // {maxDist} is measured from `prefer`, which is the current track while
-    // locked, so a cube may drift once acquired without losing the lock.
-    const lim = opts.limits || null;
-    // when a candidate is refused by the allowance, remember the biggest one
-    // and why (opts.refusals) — the UI turns that into "a little closer /
-    // straighten / centre it" instead of a blank "looking for the cube"
-    const okLimits = (cx, cy, size, angle) => {
-      if (!lim) return true;
-      const dist = Math.hypot(cx - pref.x, cy - pref.y);
-      const why = lim.maxDist && dist > lim.maxDist ? 'far'
-        : lim.minSize && size < lim.minSize ? 'small'
-        : lim.maxSize && size > lim.maxSize ? 'big'
-        : lim.maxTilt !== undefined && Math.abs(angle || 0) > lim.maxTilt ? 'tilted'
-        : null;
-      if (!why) return true;
-      const R = opts.refusals;
-      if (R && (!R.refused || size > R.refused.size)) {
-        R.refused = { why, cx, cy, size, angle: angle || 0, dist };
-      }
-      return false;
-    };
     const solid = blobs.filter((b) => b.compact > 0.72 && b.compact < 1.3 && b.fill > 0.4);
     const singles = solid.filter((b) => b.elong <= 1.45);
     // cube-coloured blobs bigger than one sticker may be several merged cells
@@ -915,7 +927,6 @@ const SCAN = (() => {
       for (const fit of fits) {
         if (fit.count < minCount) continue;
         if (clean < 2 && fit.count < 4) continue;
-        if (!okLimits(fit.cx, fit.cy, fit.size, fit.angle)) continue;
         const st = faceStats(fit);
         // physical lattice evidence: sticker seams in one consistent plastic
         // colour (stickered cubes), OR corner notches at the tile junctions
@@ -1026,7 +1037,6 @@ const SCAN = (() => {
       const size = (w + h) / 2;
       const cu = (u0 + u1) / 2, cv = (v0 + v1) / 2;
       const ucx = ca * cu - sa * cv, ucy = sa * cu + ca * cv;
-      if (!okLimits(ucx, ucy, size, ang)) continue;
       const fit = { cx: ucx, cy: ucy, x: ucx - size / 2, y: ucy - size / 2, size, angle: ang, count: 0, total: n * n };
       const st = faceStats(fit);
       if (unionLog) unionLog[unionLog.length - 1].st = st;
@@ -1082,55 +1092,12 @@ const SCAN = (() => {
     const c = Math.cos(bb.a), s = Math.sin(bb.a);
     const cx = c * bb.u - s * bb.v, cy = s * bb.u + c * bb.v;
     const size = (bb.w + bb.h) / 2;
-    if (!okLimits(cx, cy, size, bb.a)) return null;
     // even a plain (solved) face shows its lattice: gap lines on stickered
     // cubes, corner notches on gapless ones. A featureless cube-coloured
     // rectangle (a box, a book) shows neither — no lock.
     const st = faceStats({ cx, cy, size, angle: bb.a });
     if (!(st.seam >= 0.5 && st.seamConsistent) && !(st.corner >= 0.5 && st.cornerConsistent)) return null;
     return { cx, cy, x: cx - size / 2, y: cy - size / 2, size, angle: bb.a, count: 0, total: n * n, single: true };
-  }
-
-  // ---------- temporal tracker ----------
-  const QUARTER = Math.PI / 4, HALF_PI = Math.PI / 2;
-  const wrapAngle = (a) => ((((a + QUARTER) % HALF_PI) + HALF_PI) % HALF_PI) - QUARTER;
-  // Smooths raw per-frame detections into a stable lock: a detection must
-  // confirm itself over a few frames before it becomes the lock (one flaky
-  // frame on a busy background must not flash a green box), the lock rides
-  // through brief detection dropouts, and a single disagreeing frame can
-  // never teleport it.
-  function createTracker() {
-    let t = null, cand = null;
-    const CONFIRM = 3, HOLD_MS = 600, CAND_HOLD_MS = 400, A = 0.4;
-    const compat = (tr, det) => Math.hypot(det.cx - tr.cx, det.cy - tr.cy) < tr.size * 0.5
-      && det.size > tr.size * 0.7 && det.size < tr.size * 1.4;
-    const blend = (tr, det, now) => {
-      tr.cx += (det.cx - tr.cx) * A; tr.cy += (det.cy - tr.cy) * A; tr.size += (det.size - tr.size) * A;
-      tr.angle = wrapAngle(tr.angle + wrapAngle((det.angle || 0) - tr.angle) * A);   // square: angles repeat every 90°
-      tr.seen = now; tr.hits++;
-      tr.count = det.count; tr.total = det.total; tr.single = !!det.single;
-    };
-    return {
-      update(det, now) {
-        if (det) {
-          if (t && compat(t, det)) blend(t, det, now);
-          else if (cand && compat(cand, det)) {
-            blend(cand, det, now);
-            if (cand.hits >= CONFIRM) { t = cand; cand = null; }
-          } else {
-            cand = {
-              cx: det.cx, cy: det.cy, size: det.size, angle: det.angle || 0, seen: now, hits: 1,
-              count: det.count, total: det.total, single: !!det.single,
-            };
-          }
-        }
-        if (cand && now - cand.seen > CAND_HOLD_MS) cand = null;
-        if (t && now - t.seen > HOLD_MS) t = null;
-        return t;
-      },
-      get track() { return t; },
-      reset() { t = null; cand = null; },
-    };
   }
 
   // ---------- scan protocol ----------
@@ -1442,31 +1409,8 @@ const SCAN = (() => {
     return twist % 3 === 0;
   }
 
-  // The live scanner's acquisition allowance. Deliberately tight: the user
-  // is shown a guide square, so a legitimate cube is close to its centre,
-  // within ±15% of its size, and tilted under ~10° — anything else is
-  // background, and refusing it outright beats letting a lattice-like wall
-  // win a fit. opts.guideSize is the on-screen guide square mapped into
-  // detector coordinates (default ~0.55 of the frame's short side);
-  // opts.lockedSize is the current track's size when locked, which widens
-  // the size band and tilt so a cube may drift/approach once acquired
-  // without losing the lock (position drift is already allowed because
-  // {maxDist} is measured from `prefer` = the current track).
-  function liveLimits(w, h, opts) {
-    const md = Math.min(w, h);
-    const nominal = Math.min(md * 0.8, Math.max(md * 0.3, (opts && opts.guideSize) || md * 0.55));
-    const locked = opts && opts.lockedSize;
-    return {
-      maxDist: nominal * 0.18,
-      minSize: locked ? Math.min(nominal * 0.85, locked * 0.75) : nominal * 0.85,
-      maxSize: locked ? Math.max(nominal * 1.15, locked * 1.25) : nominal * 1.15,
-      maxTilt: ((locked ? 14 : 10) * Math.PI) / 180,
-    };
-  }
-
   return {
-    rgbToHsv, featOf, dist2, hueClass, normalizeCapture, normalizeAll, sampleGrid, snapRect, snapScore, outerDiffers, downsample2, detectFace,
-    createTracker, wrapAngle, liveLimits,
+    rgbToHsv, featOf, dist2, hueClass, normalizeCapture, normalizeAll, sampleGrid, registerRect, downsample2, detectFace,
     PROTO_FACES, faceletIndex, gridN, stepInfo, assignColors, applyToPaint,
     rotateGrid, arrangeLetters, repairOrder, cornersConsistent,
   };
