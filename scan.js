@@ -99,6 +99,136 @@ const SCAN = (() => {
     ]));
   }
 
+  // Local registration: starting from `rect` (the tracker's smoothed pose, or
+  // the guide square), walk translation, size and angle a short, capped
+  // distance to the pose that best aligns the sampling grid with the actual
+  // cube. Two signals score a pose, both already computed by sampleGrid:
+  // patches centred in stickers have low interior variance, and the internal
+  // grid lines land on seams/notches (darker than the cells). This is what
+  // absorbs handheld jiggle: the detector+tracker only run every few frames
+  // and smooth their answer, while this runs on the CURRENT frame right
+  // before the colours are read, so the samples land dead-centre even while
+  // the pose estimate lags a moving hand. Cost ≈ two dozen sampleGrid calls.
+  // Continuous alignment score for snapRect. sampleGrid's own outputs are
+  // deliberately plateau-shaped (binary border counts, patches that stay
+  // well inside a sticker), which is right for GATING but useless for
+  // OPTIMIZING — the score must slope over exactly the few-pixel errors the
+  // snap removes. The signal: each internal boundary point, probed just
+  // either side of the line, should MATCH its own adjacent cell's mean
+  // colour. That is self-normalizing (each face grades against its own
+  // colours), works for stickered (a misplaced probe lands in the dark seam)
+  // and gapless (it lands in the differently-coloured neighbour tile), and
+  // punishes size/angle error because misplaced lines put both probes in
+  // the same cell. Interior lattice nodes add a darkness term — the corner
+  // notches sit exactly there on both cube styles.
+  function snapScore(px, rect, n) {
+    const cs = rect.size / n;
+    const ang = rect.angle || 0, ca = Math.cos(ang), sa = Math.sin(ang);
+    const ccx = rect.x + rect.size / 2, ccy = rect.y + rect.size / 2;
+    const at = (lx, ly) => {
+      const dx = lx - rect.size / 2, dy = ly - rect.size / 2;
+      return [ccx + ca * dx - sa * dy, ccy + sa * dx + ca * dy];
+    };
+    const rgbAt = (lx, ly) => {
+      const [X0, Y0] = at(lx, ly);
+      const X = Math.round(X0), Y = Math.round(Y0);
+      if (X < 0 || Y < 0 || X >= px.width || Y >= px.height) return null;
+      const o = (Y * px.width + X) * 4;
+      return [px.data[o], px.data[o + 1], px.data[o + 2]];
+    };
+    // per-cell mean colour from a small centre patch
+    const means = [];
+    let cellLum = 0, cells = 0;
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
+        let sr = 0, sg = 0, sb = 0, cnt = 0;
+        for (const dy of [-0.15, 0, 0.15]) {
+          for (const dx of [-0.15, 0, 0.15]) {
+            const p = rgbAt((c + 0.5 + dx) * cs, (r + 0.5 + dy) * cs);
+            if (p) { sr += p[0]; sg += p[1]; sb += p[2]; cnt++; }
+          }
+        }
+        means.push(cnt ? [sr / cnt, sg / cnt, sb / cnt] : null);
+        if (cnt) { cellLum += (sr + sg + sb) / (3 * cnt); cells++; }
+      }
+    }
+    if (!cells) return -1e9;
+    const l1 = (p, m) => (Math.abs(p[0] - m[0]) + Math.abs(p[1] - m[1]) + Math.abs(p[2] - m[2])) / 3;
+    let mismatch = 0, probes = 0;
+    // probes at three distances either side of each line: successive probes
+    // cross into the seam/neighbour at successively smaller pose errors, so
+    // the score slopes in steps instead of one distant cliff — that is what
+    // gives the weak-lever parameters (size, angle) a usable gradient
+    const dists = [cs * 0.09, cs * 0.15, cs * 0.21];
+    for (let i = 1; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        for (const f of [0.2, 0.5, 0.8]) {
+          for (const horiz of [false, true]) {
+            // vertical line i: cells (j, i-1) | (j, i); horizontal line i: cells (i-1, j) | (i, j)
+            const [lx, ly] = horiz ? [(j + f) * cs, i * cs] : [i * cs, (j + f) * cs];
+            const mA = horiz ? means[(i - 1) * n + j] : means[j * n + (i - 1)];
+            const mB = horiz ? means[i * n + j] : means[j * n + i];
+            for (const d of dists) {
+              const c1 = rgbAt(lx - (horiz ? 0 : d), ly - (horiz ? d : 0));
+              const c2 = rgbAt(lx + (horiz ? 0 : d), ly + (horiz ? d : 0));
+              if (c1 && mA) { mismatch += l1(c1, mA); probes++; }
+              if (c2 && mB) { mismatch += l1(c2, mB); probes++; }
+            }
+          }
+        }
+      }
+    }
+    // interior lattice nodes: darker than the cells when aligned (seam
+    // crossings on stickered cubes, corner notches on gapless ones)
+    let nodeDark = 0, nodes = 0;
+    for (let i = 1; i < n; i++) {
+      for (let j = 1; j < n; j++) {
+        const p = rgbAt(i * cs, j * cs);
+        if (p) { nodeDark += cellLum / cells - (p[0] + p[1] + p[2]) / 3; nodes++; }
+      }
+    }
+    return (probes ? -mismatch / probes : 0) + (nodes ? (nodeDark / nodes) * 0.3 : 0);
+  }
+
+  function snapRect(px, rect, n) {
+    const a0 = rect.angle || 0;
+    // the anchor penalty keeps a signal-less pose (a solved gapless face has
+    // nothing to align on) from drifting across the score's flat plateau —
+    // real alignment gradients are an order of magnitude steeper than this
+    const score = (r) => snapScore(px, r, n)
+      - 700 * ((r.x - rect.x) ** 2 + (r.y - rect.y) ** 2) / rect.size ** 2
+      - 700 * ((r.size - rect.size) / rect.size) ** 2
+      - 250 * (r.angle - a0) ** 2;
+    let best = { x: rect.x, y: rect.y, size: rect.size, angle: a0 };
+    let bestS = score(best);
+    const trial = (r) => {
+      // caps: refinement polishes, it must never wander to a different fit
+      if (Math.hypot(r.x - rect.x, r.y - rect.y) > rect.size * 0.05) return false;
+      if (r.size < rect.size * 0.94 || r.size > rect.size * 1.06) return false;
+      if (Math.abs(wrapAngle(r.angle - a0)) > 0.07) return false;
+      const s = score(r);
+      if (s > bestS + 1e-9) { bestS = s; best = r; return true; }
+      return false;
+    };
+    for (const scale of [1, 0.4]) {          // coarse pass, then fine
+      const d = rect.size * 0.018 * scale, ds = rect.size * 0.02 * scale, da = 0.02 * scale;
+      let moved = true, guard = 0;
+      while (moved && guard++ < 5) {
+        moved = false;
+        for (const [dx, dy] of [[d, 0], [-d, 0], [0, d], [0, -d]]) {
+          moved = trial({ x: best.x + dx, y: best.y + dy, size: best.size, angle: best.angle }) || moved;
+        }
+        for (const s of [ds, -ds]) {
+          moved = trial({ x: best.x - s / 2, y: best.y - s / 2, size: best.size + s, angle: best.angle }) || moved;
+        }
+        for (const a of [da, -da]) {
+          moved = trial({ x: best.x, y: best.y, size: best.size, angle: best.angle + a }) || moved;
+        }
+      }
+    }
+    return best;
+  }
+
   // ---------- sampling a grid from raw pixel data ----------
   // px: {data: Uint8ClampedArray RGBA, width, height}
   // rect: {x, y, size, angle?} in px coords — a square whose top-left corner is
@@ -1259,7 +1389,7 @@ const SCAN = (() => {
 
   // The live scanner's acquisition allowance. Deliberately tight: the user
   // is shown a guide square, so a legitimate cube is close to its centre,
-  // within ±20% of its size, and nearly upright — anything else is
+  // within ±15% of its size, and tilted under ~10° — anything else is
   // background, and refusing it outright beats letting a lattice-like wall
   // win a fit. opts.guideSize is the on-screen guide square mapped into
   // detector coordinates (default ~0.55 of the frame's short side);
@@ -1272,15 +1402,15 @@ const SCAN = (() => {
     const nominal = Math.min(md * 0.8, Math.max(md * 0.3, (opts && opts.guideSize) || md * 0.55));
     const locked = opts && opts.lockedSize;
     return {
-      maxDist: nominal * 0.25,
-      minSize: locked ? Math.min(nominal * 0.8, locked * 0.7) : nominal * 0.8,
-      maxSize: locked ? Math.max(nominal * 1.2, locked * 1.3) : nominal * 1.2,
-      maxTilt: ((locked ? 20 : 15) * Math.PI) / 180,
+      maxDist: nominal * 0.18,
+      minSize: locked ? Math.min(nominal * 0.85, locked * 0.75) : nominal * 0.85,
+      maxSize: locked ? Math.max(nominal * 1.15, locked * 1.25) : nominal * 1.15,
+      maxTilt: ((locked ? 14 : 10) * Math.PI) / 180,
     };
   }
 
   return {
-    rgbToHsv, featOf, dist2, hueClass, normalizeCapture, normalizeAll, sampleGrid, downsample2, detectFace,
+    rgbToHsv, featOf, dist2, hueClass, normalizeCapture, normalizeAll, sampleGrid, snapRect, snapScore, downsample2, detectFace,
     createTracker, wrapAngle, liveLimits,
     PROTO_FACES, faceletIndex, gridN, stepInfo, assignColors, applyToPaint,
     rotateGrid, arrangeLetters, repairOrder, cornersConsistent,

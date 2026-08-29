@@ -1905,7 +1905,11 @@
         scan.lastDetAt = now;
       }
       const tracked = !!scan.track;
-      const rect = currentRect(fr.f);
+      // the tracker smooths (and the detector only runs every few frames), so
+      // under handheld jiggle its pose lags the cube — snap the sampling rect
+      // to the current frame before reading colours, so samples and the drawn
+      // grid stick to the stickers themselves
+      const rect = tracked ? SCAN.snapRect(fr.px, currentRect(fr.f), n) : currentRect(fr.f);
       const res = SCAN.sampleGrid(fr.px, rect, n);
       const labels = res.cells.map((c) => SCAN.hueClass(c));
       const allKnown = labels.every((l) => l !== null);
