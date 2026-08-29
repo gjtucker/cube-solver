@@ -2032,8 +2032,9 @@
         state = 'searching';
         // a cube-like candidate refused by the acquisition allowance beats
         // every other guess about what is wrong — it says exactly what to
-        // adjust. Next best: several distinct cube colours under the guide
-        // but no lattice (the cube is there but turned, showing two faces).
+        // adjust. Next best: cube colours under the guide but nothing holds —
+        // either the cube is turned (two faces showing) or it isn't steady
+        // enough for the soft lock yet; the advice covers both.
         const REFUSE_MSG = {
           far: '🎯 Found it — centre the cube in the dashed square',
           small: '🤏 Found it — a little closer, fill the dashed square',
@@ -2045,7 +2046,7 @@
         statusText = refusal ? REFUSE_MSG[refusal.why]
           : now - scan.startedAt <= 1500 ? '🔍 Looking for the cube…'
             : allKnown && distinct >= 2
-              ? '🔍 Almost — turn the cube so ONE face, flat to the camera, fills the square'
+              ? '🔍 Seeing the cube — hold it steady and flat, one face filling the square'
               : '🔍 Looking for the cube — fill the dashed square, flat and straight';
         if (refusal) statusKind = 'warn';
       } else if (gates) {
