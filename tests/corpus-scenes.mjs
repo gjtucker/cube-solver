@@ -64,9 +64,9 @@ export function makeCorpusScenarios(seed, faces, W, H) {
   const rand = mulberry32(seed);
   const minDim = Math.min(W, H);
   const out = [];
-  // stay inside the live acquisition allowance (SCAN.liveLimits):
-  // sizes within ±15% of the 0.55·minDim guide, tilt under 10°
-  const scales = [0.48, 0.55, 0.62];
+  // stay inside the live acquisition allowance (app.js updateReg clamps):
+  // sizes within ±10% of the 0.55·minDim guide, tilt under 10°
+  const scales = [0.51, 0.55, 0.6];
   const angles = [0, 5, 9];
   const backgrounds = ['gray', 'dark', 'wood', 'cluttered'];
   for (const face of faces) {
