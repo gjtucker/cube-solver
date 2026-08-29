@@ -1616,10 +1616,10 @@
   async function startScan() {
     scan.scanMode = mode;
     scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
-    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false;
+    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.drawnG = null;
     scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
     scan.stableSince = 0; scan.movedSinceCapture = false;
-    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.frame = 0; scan.acc = null;
+    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.drawnG = null; scan.frame = 0; scan.acc = null;
     scan.mirror = false; scan.facing = '';
     scan.active = true;
     setScanStatus('', '');
@@ -1715,7 +1715,7 @@
   });
   function stopScan() {
     scan.active = false;
-    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false;
+    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.drawnG = null;
     cancelAnimationFrame(scan.raf);
     if (scan.stream) { for (const t of scan.stream.getTracks()) t.stop(); scan.stream = null; }
     scanEls.video.srcObject = null;
@@ -2013,33 +2013,49 @@
         : info.hint;
       if (scanEls.hint.textContent !== hint) scanEls.hint.textContent = hint;
       // ---- overlay, per the fixed-target design ----
-      // the dashed TARGET never moves: it is what the user aligns to. The
-      // FIT rectangle is drawn on top — light while lining up, solid green
-      // once locked (amber when a gate blocks) — so target and adjustment
-      // are always both visible.
-      const g = sampleToScreen(rect, fr.f);
-      const s = g.size, gcx = g.x + s / 2, gcy = g.y + s / 2;
+      // the dashed TARGET never moves and stays the star while aiming: the
+      // dim mask anchors to it, and the fit is only a whisper-thin outline
+      // (no grid, no dots) until it LOCKS — then the fit takes over in
+      // green (amber when a capture gate blocks) and the target fades back.
+      let g = sampleToScreen(rect, fr.f);
+      // display deadband: ignore sub-2px wobble so the drawn fit sits still
+      const dg = scan.drawnG;
+      if (dg && Math.abs(dg.x - g.x) < 2 && Math.abs(dg.y - g.y) < 2
+          && Math.abs(dg.size - g.size) < 2 && Math.abs((dg.angle || 0) - (g.angle || 0)) < 0.012) {
+        g = dg;
+      } else {
+        scan.drawnG = g;
+      }
+      const tg = guideRect();
+      const dim = tracked ? g : tg;
+      const s = dim.size, gcx = dim.x + s / 2, gcy = dim.y + s / 2;
       ctx.save();
       ctx.beginPath();
       ctx.rect(0, 0, draw.width, draw.height);
       ctx.translate(gcx, gcy);
-      ctx.rotate(g.angle);
+      ctx.rotate(dim.angle || 0);
       ctx.rect(-s / 2, -s / 2, s, s);
       ctx.restore();
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
       ctx.fill('evenodd');
-      const tg = guideRect();
       ctx.save();
-      ctx.strokeStyle = tracked ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.8)';
+      ctx.strokeStyle = tracked ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.9)';
       ctx.lineWidth = 2.5;
       ctx.setLineDash([10, 8]);
       ctx.strokeRect(tg.x, tg.y, tg.size, tg.size);
       ctx.restore();
-      const boxColor = !tracked ? `rgba(255,255,255,${0.35 + 0.4 * scan.quality})`
-        : state === 'blocked' ? '#ffb020'
-        : '#3ddc84';
-      drawGridSquare(ctx, g, n, labels, boxColor, false, state === 'capturing' ? progress : 0,
-        tracked ? 1 : 0.25 + 0.5 * scan.quality);
+      if (tracked) {
+        const boxColor = state === 'blocked' ? '#ffb020' : '#3ddc84';
+        drawGridSquare(ctx, g, n, labels, boxColor, false, state === 'capturing' ? progress : 0, 1);
+      } else {
+        ctx.save();
+        ctx.strokeStyle = `rgba(255,255,255,${(0.12 + 0.18 * scan.quality).toFixed(2)})`;
+        ctx.lineWidth = 2;
+        ctx.translate(g.x + g.size / 2, g.y + g.size / 2);
+        ctx.rotate(g.angle || 0);
+        ctx.strokeRect(-g.size / 2, -g.size / 2, g.size, g.size);
+        ctx.restore();
+      }
       if (scan.debugUI) {
         // ?debug: fit quality + which auto-capture gate is failing right now
         const b = (x) => (x ? '✓' : '✗');
@@ -2338,9 +2354,9 @@
       await waitIdle(); exitPlayback(); clearMsg();
       scan.scanMode = mode;
       scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
-    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false;
+    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.drawnG = null;
       scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
-      scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.frame = 0; scan.acc = null;
+      scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.drawnG = null; scan.frame = 0; scan.acc = null;
       scan.stableSince = 0; scan.movedSinceCapture = false;
       scan.active = true;
       scanEls.overlay.classList.add('on');
@@ -2355,9 +2371,9 @@
       o = o || {};
       scan.scanMode = mode;
       scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
-    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false;
+    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.drawnG = null;
       scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
-      scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.frame = 0; scan.acc = null;
+      scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.drawnG = null; scan.frame = 0; scan.acc = null;
       scan.stableSince = 0; scan.movedSinceCapture = false;
       scan.active = true; scan.live = true; scan.source = canvas;
       scan.mirror = !!o.mirror; scan.startedAt = performance.now();
