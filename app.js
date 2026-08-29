@@ -2017,10 +2017,12 @@
         : info.hint;
       if (scanEls.hint.textContent !== hint) scanEls.hint.textContent = hint;
       // ---- overlay, per the fixed-target design ----
-      // the dashed TARGET never moves and stays the star while aiming: the
-      // dim mask anchors to it, and the fit is only a whisper-thin outline
-      // (no grid, no dots) until it LOCKS — then the fit takes over in
-      // green (amber when a capture gate blocks) and the target fades back.
+      // the dashed TARGET never moves and is the whole story: the dim mask
+      // anchors to it, and the verdict lives in its colour — white while
+      // searching, green once the fit locks, amber when a capture gate
+      // blocks — with the hold-still countdown filling its border. The fit
+      // itself is never more than a whisper-thin outline: the user doesn't
+      // need to see the machinery, only that the scan is good.
       let g = sampleToScreen(rect, fr.f);
       // display deadband: ignore sub-2px wobble so the drawn fit sits still
       const dg = scan.drawnG;
@@ -2031,7 +2033,7 @@
         scan.drawnG = g;
       }
       const tg = guideRect();
-      const dim = tracked ? g : tg;
+      const dim = tg;
       const s = dim.size, gcx = dim.x + s / 2, gcy = dim.y + s / 2;
       ctx.save();
       ctx.beginPath();
@@ -2042,24 +2044,29 @@
       ctx.restore();
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
       ctx.fill('evenodd');
+      const stateColor = !tracked ? 'rgba(255,255,255,0.9)'
+        : state === 'blocked' ? '#ffb020' : '#3ddc84';
       ctx.save();
-      ctx.strokeStyle = 'rgba(255,255,255,0.9)';   // the guide never fades — it is the constant reference
+      ctx.strokeStyle = stateColor;   // the guide never fades — it is the constant reference
       ctx.lineWidth = 2.5;
       ctx.setLineDash([10, 8]);
       ctx.strokeRect(tg.x, tg.y, tg.size, tg.size);
-      ctx.restore();
-      if (tracked) {
-        const boxColor = state === 'blocked' ? '#ffb020' : '#3ddc84';
-        drawGridSquare(ctx, g, n, labels, boxColor, false, state === 'capturing' ? progress : 0, 1);
-      } else {
-        ctx.save();
-        ctx.strokeStyle = `rgba(255,255,255,${(0.12 + 0.18 * scan.quality).toFixed(2)})`;
-        ctx.lineWidth = 2;
-        ctx.translate(g.x + g.size / 2, g.y + g.size / 2);
-        ctx.rotate(g.angle || 0);
-        ctx.strokeRect(-g.size / 2, -g.size / 2, g.size, g.size);
-        ctx.restore();
+      if (tracked && state === 'capturing' && progress > 0) {
+        // the hold-still countdown fills the guide's own border — always on
+        // screen, unlike a ring that outgrows small viewports
+        ctx.setLineDash([progress * 4 * tg.size, 4 * tg.size]);
+        ctx.lineWidth = 6;
+        ctx.strokeRect(tg.x, tg.y, tg.size, tg.size);
       }
+      ctx.restore();
+      ctx.save();
+      ctx.strokeStyle = tracked ? stateColor : '#ffffff';
+      ctx.globalAlpha = tracked ? 0.4 : 0.12 + 0.18 * scan.quality;
+      ctx.lineWidth = 2;
+      ctx.translate(g.x + g.size / 2, g.y + g.size / 2);
+      ctx.rotate(g.angle || 0);
+      ctx.strokeRect(-g.size / 2, -g.size / 2, g.size, g.size);
+      ctx.restore();
       if (scan.debugUI) {
         // ?debug: fit quality + which auto-capture gate is failing right now
         const b = (x) => (x ? '✓' : '✗');
