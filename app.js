@@ -1561,6 +1561,7 @@
     active: false, scanMode: '3', step: 0, captures: [], signatures: [],
     stream: null, raf: 0, stable: 0, lastSig: '', cooldownUntil: 0,
     sampleCanvas: document.createElement('canvas'),
+    softPoses: [], softDet: null,
     detectCanvas: document.createElement('canvas'),
     photo: { img: null, px: null, rect: null, drag: null },
     live: false,
@@ -1616,6 +1617,7 @@
   async function startScan() {
     scan.scanMode = mode;
     scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
+    scan.softPoses = []; scan.softDet = null; scan.refusal = null;
     scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
     scan.stableSince = 0; scan.movedSinceCapture = false; scan.lastDetAt = 0;
     scan.track = null; scan.tracker.reset(); scan.frame = 0; scan.acc = null;
@@ -1809,10 +1811,19 @@
     // a cube-like candidate was seen but refused by the allowance — keep the
     // reason briefly so the status can say what to adjust
     scan.refusal = !det && ref.refused ? { ...ref.refused, at: now, limits } : (det ? null : scan.refusal);
-    scan.track = scan.tracker.update(det && {
+    // guide-anchored soft detection: some real cubes defeat the lattice
+    // detector entirely (a white column of a gapless cube on a light table
+    // never segments), yet the user has deliberately filled the guide and the
+    // sampled colours are steady. scanFrame promotes that steadiness into
+    // `softDet` (marked single, like a plain-face lock, so auto-capture still
+    // demands visible border/notch evidence) — it feeds the tracker only when
+    // the real detector has nothing, and never while a refusal explains why.
+    const soft = !det && !scan.refusal && scan.softDet;
+    scan.track = scan.tracker.update(det ? {
       cx: det.cx * 2, cy: det.cy * 2, size: det.size * 2, angle: det.angle,
       count: det.count, total: det.total, single: det.single,
-    }, now);
+    } : (soft || null), now);
+    scan.softDet = null;
   }
   // the square currently used for sampling, in sample-canvas coords
   function currentRect(f) {
@@ -1915,13 +1926,36 @@
       // the tracker smooths (and the detector only runs every few frames), so
       // under handheld jiggle its pose lags the cube — snap the sampling rect
       // to the current frame before reading colours, so samples and the drawn
-      // grid stick to the stickers themselves
-      const rect = tracked ? SCAN.snapRect(fr.px, currentRect(fr.f), n) : currentRect(fr.f);
+      // grid stick to the stickers themselves. While unlocked the snap starts
+      // from the guide square: the drawn grid hugs whatever cube-like thing
+      // sits under it, and its steadiness feeds the soft lock below.
+      const rect = SCAN.snapRect(fr.px, currentRect(fr.f), n);
       const res = SCAN.sampleGrid(fr.px, rect, n);
       const labels = res.cells.map((c) => SCAN.hueClass(c));
       const allKnown = labels.every((l) => l !== null);
       const calm = res.cellVar.filter((x) => x < 1100).length >= n * n - 1;
       const bordered = res.borderDarkRatio >= 0.3;
+      // guide-anchored soft lock: some real cubes defeat the lattice detector
+      // (gapless tiles merge into monochrome blobs; a white column on a light
+      // table never segments) — but a deliberately aimed cube shows up as a
+      // STEADY snapped pose with calm, fully-classified, multi-colour
+      // samples. Six consecutive steady frames forge a plain-face detection
+      // for the tracker (consumed in updateTrack; auto-capture from such a
+      // lock still demands border/notch evidence, like any plain-face lock).
+      if (!tracked && allKnown && calm && new Set(labels).size >= 2) {
+        scan.softPoses.push({ cx: rect.x + rect.size / 2, cy: rect.y + rect.size / 2, size: rect.size, angle: rect.angle || 0 });
+        if (scan.softPoses.length > 6) scan.softPoses.shift();
+        if (scan.softPoses.length === 6) {
+          const rng = (k) => Math.max(...scan.softPoses.map((p) => p[k])) - Math.min(...scan.softPoses.map((p) => p[k]));
+          if (rng('cx') <= rect.size * 0.04 && rng('cy') <= rect.size * 0.04
+              && rng('size') <= rect.size * 0.05 && rng('angle') <= 0.05) {
+            const last = scan.softPoses[scan.softPoses.length - 1];
+            scan.softDet = { cx: last.cx, cy: last.cy, size: last.size, angle: last.angle, count: n * n, total: n * n, single: true };
+          }
+        }
+      } else {
+        scan.softPoses.length = 0;
+      }
       const sig = labels.join('');
       // signatures are compared with one cell of tolerance everywhere: real
       // cameras flicker a borderline sticker between two hues, and one noisy
@@ -2359,6 +2393,7 @@
       await waitIdle(); exitPlayback(); clearMsg();
       scan.scanMode = mode;
       scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
+    scan.softPoses = []; scan.softDet = null; scan.refusal = null;
       scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
       scan.track = null; scan.tracker.reset(); scan.frame = 0; scan.acc = null;
       scan.stableSince = 0; scan.movedSinceCapture = false; scan.lastDetAt = 0;
@@ -2375,6 +2410,7 @@
       o = o || {};
       scan.scanMode = mode;
       scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
+    scan.softPoses = []; scan.softDet = null; scan.refusal = null;
       scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
       scan.track = null; scan.tracker.reset(); scan.frame = 0; scan.acc = null;
       scan.stableSince = 0; scan.movedSinceCapture = false; scan.lastDetAt = 0;
