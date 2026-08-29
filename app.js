@@ -763,14 +763,33 @@
         const off = (n[0] ? lx / lc : n[1] ? ly / lc : lz / lc) * step;
         ring.dataset.base = `${rot} translateZ(${off}px)`;
         ring.style.transform = ring.dataset.base;
-        ring.innerHTML = `<svg viewBox="-110 -110 220 220">
+        // the band: the classic rotation glyph — two arcs with two gaps, each
+        // arc ENDING in a chevron whose tip sits on the circle and whose barbs
+        // trail along the motion tangent, so every arrowhead points forward
+        // into its gap and the circulation is unambiguous from any 3D angle.
+        // In ring-local coordinates every plane transform above lands the same
+        // way: the sweep is screen-clockwise exactly when (face normal)·(turn
+        // angle) is positive (for 180° turns either direction is honest).
+        const dir = (n[0] + n[1] + n[2]) * angle >= 0 ? 1 : -1;
+        const rad = (deg) => (deg * Math.PI) / 180;
+        const pt = (th) => [100 * Math.cos(th), 100 * Math.sin(th)];
+        const xy = (v) => `${v[0].toFixed(1)} ${v[1].toFixed(1)}`;
+        const head = (th) => {
+          const t = [-Math.sin(th) * dir, Math.cos(th) * dir];  // unit motion tangent
+          const p = [Math.cos(th), Math.sin(th)];               // unit radial
+          const [x, y] = pt(th);
+          const barb = (s) => xy([x - 17 * t[0] + s * 10 * p[0], y - 17 * t[1] + s * 10 * p[1]]);
+          return `M ${barb(1)} L ${xy([x, y])} L ${barb(-1)}`;
+        };
+        const paths = [];
+        for (const [a, b] of [[rad(10), rad(170)], [rad(190), rad(350)]]) {
+          const end = dir > 0 ? b : a;   // the arc is drawn along the motion
+          paths.push(`M ${xy(pt(dir > 0 ? a : b))} A 100 100 0 0 ${dir > 0 ? 1 : 0} ${xy(pt(end))}`, head(end));
+        }
+        ring.innerHTML = `<svg viewBox="-120 -120 240 240">
           <g fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M 94 -34 A 100 100 0 1 0 94 34" stroke="rgba(0,0,0,0.55)" stroke-width="9"/>
-            <path d="M 94 -34 A 100 100 0 1 0 94 34" stroke="#fff" stroke-width="4.5"/>
-            <path d="M 78 -46 L 94 -34 L 76 -18" stroke="rgba(0,0,0,0.55)" stroke-width="9"/>
-            <path d="M 78 -46 L 94 -34 L 76 -18" stroke="#fff" stroke-width="4.5"/>
-            <path d="M 78 46 L 94 34 L 76 18" stroke="rgba(0,0,0,0.55)" stroke-width="9"/>
-            <path d="M 78 46 L 94 34 L 76 18" stroke="#fff" stroke-width="4.5"/>
+            ${paths.map((d) => `<path d="${d}" stroke="rgba(0,0,0,0.55)" stroke-width="9"/>
+            <path d="${d}" stroke="#fff" stroke-width="4.5"/>`).join('\n            ')}
           </g>
         </svg>`;
         cubeEl.appendChild(ring);
@@ -2285,6 +2304,8 @@
 
   // test hook
   window.__cubeDebug = {
+    // test hook: animate one move at a chosen duration (rings included)
+    animate(move, dur) { return playSequence([move], dur || animDuration()); },
     get mode() { return mode; },
     get method() { return method; },
     get pbState() { return pbState; },
