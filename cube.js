@@ -1706,7 +1706,7 @@ const K = (() => {
     if (perr) return { error: perr };
 
     const start = Date.now();
-    let best = null;
+    /** @type {string[]|null} */ let best = null;
 
     // phase-1 start coordinates
     const co0 = coOf(c0.co), eo0 = eoOf(c0.eo), sl0 = sliceOf(c0.ep);

@@ -4,6 +4,8 @@
 
 (() => {
   const C = window.Cube;
+  /** @param {string} sel @returns {NodeListOf<HTMLElement>} */
+  const $$ = (sel) => document.querySelectorAll(sel);
   const C4 = window.Cube4;
   // ---- 4×4 fast solver: shipped tables + parallel search workers ----
   // The table bundle is fetched once in the background (skipping the ~10s
@@ -271,7 +273,7 @@
   let mode = '3';
   let method = 'beginner'; // beginner | fast
   let selColor = 'U';   // for color modes
-  let selShape = 3;     // for mirror mode
+  /** @type {number|'X'} */ let selShape = 3;     // for mirror mode
   let animating = false;
   let solution = null;
   let baseState = null;   // colored state at solve time (virtual for mirror)
@@ -513,7 +515,7 @@
       fEl.className = 'netface';
       fEl.style.gridColumn = NET_COL[f];
       fEl.style.gridRow = NET_ROW[f];
-      fEl.style.setProperty('--n', n);
+      fEl.style.setProperty('--n', String(n));
       for (let r = 0; r < n; r++) {
         for (let c = 0; c < n; c++) {
           const idx = mode === '2'
@@ -569,7 +571,7 @@
   // panel's real height instead of guessing in vh (it varies with the hint
   // line, paddings, and 3D-vs-net view)
   function updateStickyOffsets() {
-    const stage = document.querySelector('.stage3d');
+    const stage = /** @type {HTMLElement|null} */ (document.querySelector('.stage3d'));
     if (stage) document.documentElement.style.setProperty('--stickyTop', (stage.offsetHeight + 10) + 'px');
   }
   // the panel's height shifts with fonts loading, hint wrapping, and the
@@ -761,14 +763,33 @@
         const off = (n[0] ? lx / lc : n[1] ? ly / lc : lz / lc) * step;
         ring.dataset.base = `${rot} translateZ(${off}px)`;
         ring.style.transform = ring.dataset.base;
-        ring.innerHTML = `<svg viewBox="-110 -110 220 220">
+        // the band: the classic rotation glyph — two arcs with two gaps, each
+        // arc ENDING in a chevron whose tip sits on the circle and whose barbs
+        // trail along the motion tangent, so every arrowhead points forward
+        // into its gap and the circulation is unambiguous from any 3D angle.
+        // In ring-local coordinates every plane transform above lands the same
+        // way: the sweep is screen-clockwise exactly when (face normal)·(turn
+        // angle) is positive (for 180° turns either direction is honest).
+        const dir = (n[0] + n[1] + n[2]) * angle >= 0 ? 1 : -1;
+        const rad = (deg) => (deg * Math.PI) / 180;
+        const pt = (th) => [100 * Math.cos(th), 100 * Math.sin(th)];
+        const xy = (v) => `${v[0].toFixed(1)} ${v[1].toFixed(1)}`;
+        const head = (th) => {
+          const t = [-Math.sin(th) * dir, Math.cos(th) * dir];  // unit motion tangent
+          const p = [Math.cos(th), Math.sin(th)];               // unit radial
+          const [x, y] = pt(th);
+          const barb = (s) => xy([x - 17 * t[0] + s * 10 * p[0], y - 17 * t[1] + s * 10 * p[1]]);
+          return `M ${barb(1)} L ${xy([x, y])} L ${barb(-1)}`;
+        };
+        const paths = [];
+        for (const [a, b] of [[rad(10), rad(170)], [rad(190), rad(350)]]) {
+          const end = dir > 0 ? b : a;   // the arc is drawn along the motion
+          paths.push(`M ${xy(pt(dir > 0 ? a : b))} A 100 100 0 0 ${dir > 0 ? 1 : 0} ${xy(pt(end))}`, head(end));
+        }
+        ring.innerHTML = `<svg viewBox="-120 -120 240 240">
           <g fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M 94 -34 A 100 100 0 1 0 94 34" stroke="rgba(0,0,0,0.55)" stroke-width="9"/>
-            <path d="M 94 -34 A 100 100 0 1 0 94 34" stroke="#fff" stroke-width="4.5"/>
-            <path d="M 78 -46 L 94 -34 L 76 -18" stroke="rgba(0,0,0,0.55)" stroke-width="9"/>
-            <path d="M 78 -46 L 94 -34 L 76 -18" stroke="#fff" stroke-width="4.5"/>
-            <path d="M 78 46 L 94 34 L 76 18" stroke="rgba(0,0,0,0.55)" stroke-width="9"/>
-            <path d="M 78 46 L 94 34 L 76 18" stroke="#fff" stroke-width="4.5"/>
+            ${paths.map((d) => `<path d="${d}" stroke="rgba(0,0,0,0.55)" stroke-width="9"/>
+            <path d="${d}" stroke="#fff" stroke-width="4.5"/>`).join('\n            ')}
           </g>
         </svg>`;
         cubeEl.appendChild(ring);
@@ -811,6 +832,7 @@
 
   // ---------- palette ----------
   const paletteEl = document.getElementById('palette');
+  /** @type {Array<{code: number|'X', w?: number, h?: number, label: string}>} */
   const SHAPES = [
     { code: 0, w: 14, h: 14, label: 'small' },
     { code: 1, w: 26, h: 14, label: 'wide' },
@@ -825,7 +847,7 @@
       for (const sh of SHAPES) {
         const b = document.createElement('div');
         b.className = 'swatch' + (sh.code === selShape ? ' sel' : '');
-        b.dataset.shape = sh.code;
+        b.dataset.shape = String(sh.code);
         if (sh.code !== 'X') {
           const r = document.createElement('div');
           r.className = 'srect';
@@ -869,7 +891,7 @@
   // ---------- mode switching ----------
   const hint3d = document.getElementById('hint3d');
   const howtoEl = document.getElementById('howto');
-  document.querySelectorAll('.tab').forEach((t) => {
+  $$('.tab').forEach((t) => {
     t.addEventListener('click', async () => {
       if (t.dataset.mode === mode || scrambling) return;
       await waitIdle();
@@ -912,7 +934,7 @@
     },
   };
   function updateMethodNote() { methodNote.textContent = METHOD_NOTES[method][mode]; }
-  document.querySelectorAll('.segbtn').forEach((b) => {
+  $$('.segbtn').forEach((b) => {
     b.addEventListener('click', async () => {
       if (b.dataset.method === method || scrambling) return;
       await waitIdle();
@@ -925,8 +947,8 @@
   });
 
   // ---------- top buttons ----------
-  const btnSolve = document.getElementById('btnSolve');
-  const btnEdit = document.getElementById('btnEdit');
+  const btnSolve = /** @type {HTMLButtonElement} */ (document.getElementById('btnSolve'));
+  const btnEdit = /** @type {HTMLButtonElement} */ (document.getElementById('btnEdit'));
   const solutionEl = document.getElementById('solution');
   const paintCard = document.getElementById('paintCard');
 
@@ -1147,7 +1169,7 @@
     btnHarder.style.display = mode === '4' && method === 'fast' && typeof Worker !== 'undefined' ? '' : 'none';
   }
 
-  const btnHarder = document.getElementById('btnHarder');
+  const btnHarder = /** @type {HTMLButtonElement} */ (document.getElementById('btnHarder'));
   btnHarder.addEventListener('click', async () => {
     if (!solution || !baseState) return;
     await waitIdle();
@@ -1188,19 +1210,19 @@
   const progText = document.getElementById('progText');
   const bigdone = document.getElementById('bigdone');
   const pb = {
-    start: document.getElementById('pbStart'),
-    back: document.getElementById('pbBack'),
-    play: document.getElementById('pbPlay'),
-    fwd: document.getElementById('pbFwd'),
-    end: document.getElementById('pbEnd'),
+    start: /** @type {HTMLButtonElement} */ (document.getElementById('pbStart')),
+    back: /** @type {HTMLButtonElement} */ (document.getElementById('pbBack')),
+    play: /** @type {HTMLButtonElement} */ (document.getElementById('pbPlay')),
+    fwd: /** @type {HTMLButtonElement} */ (document.getElementById('pbFwd')),
+    end: /** @type {HTMLButtonElement} */ (document.getElementById('pbEnd')),
   };
-  document.getElementById('speed').addEventListener('input', (e) => { speedVal = +e.target.value; saveState(); });
+  document.getElementById('speed').addEventListener('input', (e) => { speedVal = +(/** @type {HTMLInputElement} */ (e.target)).value; saveState(); });
 
   function enterPlayback() {
     solutionEl.style.display = 'block';
     btnEdit.style.display = '';
     btnSolve.style.display = 'none';
-    paintCard.style.opacity = 0.45;
+    paintCard.style.opacity = '0.45';
     paintCard.style.pointerEvents = 'none';
     pbState = baseState.slice();
     if (mode === 'm') mirrorGeo = true;
@@ -1310,7 +1332,7 @@
       } else {
         // phone: the page scrolls under the pinned cube — keep the active
         // stage in the visible band between the cube and the bottom edge
-        const stage = document.querySelector('.stage3d');
+        const stage = /** @type {HTMLElement|null} */ (document.querySelector('.stage3d'));
         const band0 = (stage ? stage.getBoundingClientRect().bottom : 0) + 60;
         const r = stgEl.getBoundingClientRect();
         if (r.top < band0 || r.top > innerHeight - 120) {
@@ -1376,7 +1398,7 @@
   const themeBtn = document.getElementById('themeToggle');
   const applyTheme = (t) => {
     document.documentElement.dataset.theme = t;
-    const mtc = document.querySelector('meta[name="theme-color"]');
+    const mtc = /** @type {HTMLMetaElement|null} */ (document.querySelector('meta[name="theme-color"]'));
     if (mtc) mtc.content = t === 'light' ? '#f2f4f7' : '#0e1013';
     themeBtn.textContent = t === 'light' ? '🌙' : '☀️';
   };
@@ -1422,9 +1444,9 @@
   // sync the static markup with any restored state before the first paint
   // (howto/hint text is already set from the restored mode further up)
   if (savedState || sharedCube) {
-    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
-    document.querySelectorAll('.segbtn').forEach((x) => x.classList.toggle('on', x.dataset.method === method));
-    document.getElementById('speed').value = speedVal;
+    $$('.tab').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
+    $$('.segbtn').forEach((x) => x.classList.toggle('on', x.dataset.method === method));
+    /** @type {HTMLInputElement} */ (document.getElementById('speed')).value = String(speedVal);
   }
   buildPalette();
   buildCube();
@@ -1467,7 +1489,7 @@
     mode = s.m;
     data[mode].paint = s.p;
     shareVirgin = true;
-    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
+    $$('.tab').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
     howtoEl.innerHTML = HOWTO[mode];
     updateMethodNote();
     updateScanButton();
@@ -1508,8 +1530,8 @@
   const SCAN = window.SCAN;
   const scanEls = {
     overlay: document.getElementById('scanOverlay'),
-    video: document.getElementById('scanVideo'),
-    draw: document.getElementById('scanDraw'),
+    video: /** @type {HTMLVideoElement} */ (document.getElementById('scanVideo')),
+    draw: /** @type {HTMLCanvasElement} */ (document.getElementById('scanDraw')),
     progress: document.getElementById('scanProgress'),
     status: document.getElementById('scanStatus'),
     title: document.getElementById('scanTitle'),
@@ -1520,17 +1542,17 @@
     usePhoto: document.getElementById('scanUsePhoto'),
     undo: document.getElementById('scanUndo'),
     mirror: document.getElementById('scanMirror'),
-    file: document.getElementById('scanFile'),
+    file: /** @type {HTMLInputElement} */ (document.getElementById('scanFile')),
     photoStage: document.getElementById('photoStage'),
-    photoCanvas: document.getElementById('photoCanvas'),
-    photoSize: document.getElementById('photoSize'),
-    photoAngle: document.getElementById('photoAngle'),
+    photoCanvas: /** @type {HTMLCanvasElement} */ (document.getElementById('photoCanvas')),
+    photoSize: /** @type {HTMLInputElement} */ (document.getElementById('photoSize')),
+    photoAngle: /** @type {HTMLInputElement} */ (document.getElementById('photoAngle')),
     photoLabel: document.getElementById('photoLabel'),
     photoConfirm: document.getElementById('photoConfirm'),
     photoRetake: document.getElementById('photoRetake'),
     choice: document.getElementById('scanChoice'),
     choiceMsg: document.getElementById('scanChoiceMsg'),
-    openFull: document.getElementById('scanOpenFull'),
+    openFull: /** @type {HTMLAnchorElement} */ (document.getElementById('scanOpenFull')),
     retryCam: document.getElementById('scanRetryCam'),
     choicePhoto: document.getElementById('scanChoicePhoto'),
   };
@@ -2150,8 +2172,8 @@
       scan.photo.rect = { x: (innerWidth - side) / 2, y: (innerHeight - side) / 2 - innerHeight * 0.06, size: side, angle: 0 };
     }
     const minDim = Math.min(innerWidth, innerHeight);
-    scanEls.photoSize.value = Math.max(10, Math.min(95, Math.round((scan.photo.rect.size / minDim) * 100)));
-    scanEls.photoAngle.value = Math.round((scan.photo.rect.angle * 180) / Math.PI);
+    scanEls.photoSize.value = String(Math.max(10, Math.min(95, Math.round((scan.photo.rect.size / minDim) * 100))));
+    scanEls.photoAngle.value = String(Math.round((scan.photo.rect.angle * 180) / Math.PI));
     scanEls.photoLabel.textContent = det
       ? 'Found the face — drag or use the sliders if the grid is off, then confirm'
       : 'Drag the grid onto the cube face · sliders resize and rotate it';
@@ -2282,6 +2304,8 @@
 
   // test hook
   window.__cubeDebug = {
+    // test hook: animate one move at a chosen duration (rings included)
+    animate(move, dur) { return playSequence([move], dur || animDuration()); },
     get mode() { return mode; },
     get method() { return method; },
     get pbState() { return pbState; },

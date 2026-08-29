@@ -28,11 +28,11 @@ const CORE = [
   'icons/apple-touch-icon.png',
 ];
 
-self.addEventListener('install', (e) => {
+self.addEventListener('install', (/** @type {ExtendableEvent} */ e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE)).then(() => self.skipWaiting()));
 });
 
-self.addEventListener('activate', (e) => {
+self.addEventListener('activate', (/** @type {ExtendableEvent} */ e) => {
   e.waitUntil(
     caches.keys()
       .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
@@ -40,7 +40,7 @@ self.addEventListener('activate', (e) => {
   );
 });
 
-self.addEventListener('fetch', (e) => {
+self.addEventListener('fetch', (/** @type {FetchEvent} */ e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET') return;
   // web fonts are immutable — cache-first keeps typography working offline
