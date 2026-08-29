@@ -243,12 +243,12 @@ function makeScenarios(seed) {
   const out = [];
   const minDim = Math.min(W, H);
   // the live scanner enforces a tight acquisition allowance (SCAN.liveLimits):
-  // near the guide-square centre, within ±20% of the guide size (default
-  // 0.55·minDim, so sizes 0.44–0.66), tilted < 15°. The should-lock scenarios
-  // stay inside it; a separate out-of-allowance set below verifies everything
-  // else is refused rather than snapped to.
-  const scales = [0.45, 0.5, 0.55, 0.6, 0.65];
-  const angles = [0, 4, 8, 11, 14];
+  // near the guide-square centre, within ±15% of the guide size (default
+  // 0.55·minDim, so sizes ~0.47–0.63), tilted < 10°. The should-lock
+  // scenarios stay inside it; a separate out-of-allowance set below verifies
+  // everything else is refused rather than snapped to.
+  const scales = [0.48, 0.51, 0.55, 0.59, 0.62];
+  const angles = [0, 3, 5, 7, 9];
   const backgrounds = ['gray', 'dark', 'wood', 'cluttered', 'mosaic', 'tilewall'];
   const clutterScene = () => clutterRects(rand);
   for (const n of [3, 4, 2]) {
@@ -258,10 +258,10 @@ function makeScenarios(seed) {
           for (let variant = 0; variant < 3; variant++) {
             const size = scale * minDim;
             const solved = variant === 2 && rand() < 0.5;
-            // inside the acquisition allowance: within ~0.12·minDim of the
-            // guide-square centre (liveLimits allows ~0.14) and fully in frame
+            // inside the acquisition allowance: within ~0.08·minDim of the
+            // guide-square centre (liveLimits allows ~0.10) and fully in frame
             const reach = (size * Math.SQRT2) / 2;
-            const maxOff = Math.max(1, Math.min(minDim * 0.12, W * 0.45 - reach, H * 0.45 - reach));
+            const maxOff = Math.max(1, Math.min(minDim * 0.08, W * 0.45 - reach, H * 0.45 - reach));
             const glareOn = variant >= 1 && rand() < 0.5;
             const offR = rand() * maxOff, offT = rand() * Math.PI * 2;
             const cx = W / 2 + Math.cos(offT) * offR;
@@ -310,13 +310,13 @@ function makeScenarios(seed) {
   for (const kind of ['small', 'big', 'far', 'tilted']) {
     for (const background of ['gray', 'wood', 'cluttered']) {
       for (let i = 0; i < 6; i++) {
-        const scale = kind === 'small' ? 0.30 : kind === 'big' ? 0.75 : 0.55;
+        const scale = kind === 'small' ? 0.36 : kind === 'big' ? 0.72 : 0.55;
         const size = scale * minDim;
-        const angleDeg = kind === 'tilted' ? 21 + rand() * 10 : rand() * 8;
+        const angleDeg = kind === 'tilted' ? 15 + rand() * 8 : rand() * 6;
         const cx = kind === 'far'
-          ? W / 2 + (rand() < 0.5 ? -1 : 1) * minDim * (0.25 + rand() * 0.2)
-          : W / 2 + (rand() - 0.5) * 30;
-        const cy = H / 2 + (rand() - 0.5) * 24;
+          ? W / 2 + (rand() < 0.5 ? -1 : 1) * minDim * (0.17 + rand() * 0.15)
+          : W / 2 + (rand() - 0.5) * 24;
+        const cy = H / 2 + (rand() - 0.5) * 20;
         out.push({
           n: 3, scale, angleDeg, background, solved: false, hasCube: true, oob: kind,
           clutterRects: background === 'cluttered' ? clutterScene() : null,
@@ -369,18 +369,36 @@ const scenarios = makeScenarios(seed);
 const cubeScen = scenarios.filter((s) => s.hasCube && !s.oob);
 const emptyScen = scenarios.filter((s) => !s.hasCube);
 
+// handheld jiggle: nobody holds a phone still, so every frame the cube's
+// pose wobbles around the base scenario — ±2% of size in position and
+// scale, ±1.2° in angle, fresh each frame. The tracker smooths through it;
+// the colour read below then has to cope with a LAST frame that has moved
+// away from the smoothed pose, exactly like a live hand.
+function jiggled(sc) {
+  if (!sc.hasCube) return sc;
+  const r = sc.rand;
+  return {
+    ...sc,
+    cx: sc.cx + (r() - 0.5) * sc.size * 0.04,
+    cy: sc.cy + (r() - 0.5) * sc.size * 0.04,
+    size: sc.size * (1 + (r() - 0.5) * 0.04),
+    angle: sc.angle + ((r() - 0.5) * 2.4 * Math.PI) / 180,
+  };
+}
+
 const results = [];
 const t0 = Date.now();
 for (const sc of scenarios) {
   const tracker = SCAN.createTracker();
-  let track = null;
+  let track = null, lastSc = sc;
   for (let f = 0; f < FRAMES; f++) {
-    const frame = renderFrame(sc);
+    lastSc = jiggled(sc);
+    const frame = renderFrame(lastSc);
     const prefer = track ? { x: track.cx, y: track.cy } : { x: W / 2, y: H / 2 };
     const det = SCAN.detectFace(frame, sc.n, { prefer, limits: SCAN.liveLimits(W, H) });
     track = tracker.update(det, f * 66);
   }
-  results.push({ sc, det: track, s: sc.hasCube ? score(sc, track) : null });
+  results.push({ sc, lastSc, det: track, s: sc.hasCube ? score(sc, track) : null });
 }
 const elapsed = Date.now() - t0;
 
@@ -411,13 +429,15 @@ function bucket(keyFn) {
   return [...m.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0]), undefined, { numeric: true }));
 }
 
-// colour-label accuracy on the locks the user would act on: sample the
-// locked grid and compare hueClass against the ground-truth face
+// colour-label accuracy on the locks the user would act on: a jiggled final
+// frame (the hand has moved since the tracker's smoothed pose), the sampling
+// rect snapped to it exactly as the app does, hueClass vs the ground truth
 let labelOk = 0, labelAll = 0;
 for (const r of results) {
   if (!r.sc.hasCube || r.sc.oob || !r.s || !r.s.hit) continue;
-  const frame = renderFrame(r.sc);
-  const rect = { x: r.det.cx - r.det.size / 2, y: r.det.cy - r.det.size / 2, size: r.det.size, angle: r.det.angle };
+  const frame = renderFrame(r.lastSc);
+  let rect = { x: r.det.cx - r.det.size / 2, y: r.det.cy - r.det.size / 2, size: r.det.size, angle: r.det.angle };
+  if (!args.includes('--nosnap')) rect = SCAN.snapRect(frame, rect, r.sc.n); // --nosnap: measure what the snap buys
   const res = SCAN.sampleGrid(frame, rect, r.sc.n);
   res.cells.forEach((c, i) => { labelAll++; if (SCAN.hueClass(c) === r.sc.face[i]) labelOk++; });
 }
