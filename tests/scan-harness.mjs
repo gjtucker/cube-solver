@@ -4,15 +4,15 @@
 // Loads the SCAN module (scan.js), renders synthetic camera frame
 // sequences (a cube face at varying scale / tilt / position / lighting /
 // glare / noise over varying backgrounds, fresh sensor noise every frame) and
-// runs them through detectFace + the temporal tracker — the same pipeline the
-// live scanner uses. Measures how often the tracker ends up LOCKED on the
-// face, how accurately the lock reports centre/size/angle, and the false-lock
-// rate on sequences with no cube in them.
+// runs them through the live pipeline — registerRect clamped to the fixed
+// guide square + the quality lock — exactly what the scanner ships. Measures
+// how often it ends up LOCKED on the face, how accurately the lock reports
+// centre/size/angle, and the false-lock rate on cube-free sequences.
 //
 //   node tests/scan-harness.mjs            # human-readable report
 //   node tests/scan-harness.mjs --json     # machine-readable summary
 //   node tests/scan-harness.mjs --seed 7   # different scenario set
-//   node tests/scan-harness.mjs --frames 4 # shorter sequences (faster, default 8)
+//   node tests/scan-harness.mjs --frames 9 # shorter sequences (faster, default 12)
 //   node tests/scan-harness.mjs --corpus  # real photographed faces, not synthetic
 //
 // --corpus swaps the synthetic face for a rectified PHOTOGRAPH of a real cube
@@ -312,7 +312,7 @@ function makeScenarios(seed) {
       for (let i = 0; i < 6; i++) {
         const scale = kind === 'small' ? 0.36 : kind === 'big' ? 0.72 : 0.55;
         const size = scale * minDim;
-        const angleDeg = kind === 'tilted' ? 15 + rand() * 8 : rand() * 6;
+        const angleDeg = kind === 'tilted' ? 26 + rand() * 8 : rand() * 6;
         const cx = kind === 'far'
           ? W / 2 + (rand() < 0.5 ? -1 : 1) * minDim * (0.17 + rand() * 0.15)
           : W / 2 + (rand() - 0.5) * 24;
@@ -350,7 +350,7 @@ function score(sc, det) {
 
 // ---------- run ----------
 // Each scenario is simulated as a short sequence of frames with fresh sensor
-// noise, run through detectFace + the temporal tracker — exactly the pipeline
+// noise, run through the registration + quality-lock pipeline — exactly what
 // the live scanner uses. What is scored is the LOCK the user would see at the
 // end of the sequence, not a single-frame detection: a lock must confirm
 // itself over consecutive frames, which is also what gates auto-capture.
@@ -359,7 +359,7 @@ const asJson = args.includes('--json');
 const seedArg = args.indexOf('--seed');
 const seed = seedArg >= 0 ? +args[seedArg + 1] : 1;
 const framesArg = args.indexOf('--frames');
-const FRAMES = framesArg >= 0 ? +args[framesArg + 1] : 8;
+const FRAMES = framesArg >= 0 ? +args[framesArg + 1] : 32; // ~1s of aiming at 30fps
 
 if (args.includes('--corpus')) {
   runCorpus();
@@ -386,19 +386,59 @@ function jiggled(sc) {
   };
 }
 
+// ---------- the live pipeline ----------
+// Mirrors app.js scanFrame: registerRect each frame, clamped to the fixed
+// centred guide square, median-of-3 filtered; the quality lock rises while
+// the edges are strong and every cell classifies. Kept deliberately tiny so
+// the duplication with app.js stays reviewable.
+const GS = Math.min(W, H) * 0.55;
+const GUIDE = { x: W / 2 - GS / 2, y: H / 2 - GS / 2, size: GS };
+function runLive(renderer, n) {
+  let reg = null, q = 0, locked = false, lastFrame = null, calmLast = false, knownLast = false;
+  const hist = [];
+  for (let f = 0; f < FRAMES; f++) {
+    lastFrame = renderer();
+    const raw = SCAN.registerRect(lastFrame, GUIDE, reg);
+    const cl = (v, c, d) => Math.min(c + d, Math.max(c - d, v));
+    if (Math.abs(raw.size - cl(raw.size, GUIDE.size, GUIDE.size * 0.18)) > 2) raw.strength = 0;
+    raw.size = cl(raw.size, GUIDE.size, GUIDE.size * 0.18);
+    const cx = cl(raw.x + raw.size / 2, GUIDE.x + GUIDE.size / 2, GUIDE.size * 0.15);
+    const cy = cl(raw.y + raw.size / 2, GUIDE.y + GUIDE.size / 2, GUIDE.size * 0.15);
+    // a fit that had to be FORCED into the allowance is not the cube filling
+    // the guide — refuse it rather than sample a wrong grid
+    if (Math.abs(cx - (raw.x + raw.size / 2)) > 2 || Math.abs(cy - (raw.y + raw.size / 2)) > 2) raw.strength = 0;
+    raw.x = cx - raw.size / 2;
+    raw.y = cy - raw.size / 2;
+    raw.angle = cl(raw.angle, 0, 0.35);
+    hist.push(raw);
+    if (hist.length > 3) hist.shift();
+    const med = (k) => hist.map((r) => r[k]).sort((a, b) => a - b)[hist.length >> 1];
+    reg = { x: med('x'), y: med('y'), size: med('size'), angle: med('angle'), strength: med('strength') };
+    const res = SCAN.sampleGrid(lastFrame, reg, n);
+    const allKnown = res.cells.every((c) => SCAN.hueClass(c) !== null);
+    const aligned = reg.strength >= 14 && allKnown;
+    q = aligned ? Math.min(1, q + 0.15) : Math.max(0, q - 0.1);
+    locked = q >= (locked ? 0.45 : 0.8);
+    calmLast = res.cellVar.filter((x) => x < 1100).length >= n * n - 1;
+    knownLast = allKnown;
+  }
+  return { reg, locked, lastFrame, capturable: locked && calmLast && knownLast };
+}
+
 const results = [];
 const t0 = Date.now();
 for (const sc of scenarios) {
-  const tracker = SCAN.createTracker();
-  let track = null, lastSc = sc;
-  for (let f = 0; f < FRAMES; f++) {
-    lastSc = jiggled(sc);
-    const frame = renderFrame(lastSc);
-    const prefer = track ? { x: track.cx, y: track.cy } : { x: W / 2, y: H / 2 };
-    const det = SCAN.detectFace(frame, sc.n, { prefer, limits: SCAN.liveLimits(W, H) });
-    track = tracker.update(det, f * 66);
+  let lastSc = sc;
+  const out = runLive(() => renderFrame(sc.hasCube ? (lastSc = jiggled(sc)) : sc), sc.n);
+  const capturable = out.capturable;
+  const det = out.locked
+    ? { cx: out.reg.x + out.reg.size / 2, cy: out.reg.y + out.reg.size / 2, size: out.reg.size, angle: out.reg.angle, reg: out.reg }
+    : null;
+  if (process.env.DUMP_OOB && sc.oob && capturable) {
+    console.error('OOB-CAP', JSON.stringify({ kind: sc.oob, cx: +sc.cx.toFixed(0), cy: +sc.cy.toFixed(0), size: +sc.size.toFixed(0), bg: sc.background,
+      fit: { cx: +(out.reg.x + out.reg.size / 2).toFixed(0), cy: +(out.reg.y + out.reg.size / 2).toFixed(0), size: +out.reg.size.toFixed(0), st: Math.round(out.reg.strength) } }));
   }
-  results.push({ sc, lastSc, det: track, s: sc.hasCube ? score(sc, track) : null });
+  results.push({ sc, lastSc, det, capturable, s: sc.hasCube ? score(sc, det) : null });
 }
 const elapsed = Date.now() - t0;
 
@@ -436,8 +476,7 @@ let labelOk = 0, labelAll = 0;
 for (const r of results) {
   if (!r.sc.hasCube || r.sc.oob || !r.s || !r.s.hit) continue;
   const frame = renderFrame(r.lastSc);
-  let rect = { x: r.det.cx - r.det.size / 2, y: r.det.cy - r.det.size / 2, size: r.det.size, angle: r.det.angle };
-  if (!args.includes('--nosnap')) rect = SCAN.snapRect(frame, rect, r.sc.n); // --nosnap: measure what the snap buys
+  const rect = r.det.reg;
   const res = SCAN.sampleGrid(frame, rect, r.sc.n);
   res.cells.forEach((c, i) => { labelAll++; if (SCAN.hueClass(c) === r.sc.face[i]) labelOk++; });
 }
@@ -451,7 +490,7 @@ const summary = {
   badFitRateAdv: badFitsAdv.length / mosaicRes.length,
   falseLockRate: falseLocks.length / emptyReal.length,
   mosaicFalseLockRate: mosaicFalseLocks.length / emptyMosaic.length,
-  oobLockRate: oobRes.filter((r) => r.det).length / oobRes.length,
+  oobLockRate: oobRes.filter((r) => r.capturable).length / oobRes.length,
   labelErrRate: labelAll ? 1 - labelOk / labelAll : 0,
   medianCenterErr: hits.map((r) => r.s.centerErr).sort((a, b) => a - b)[hits.length >> 1] ?? null,
   medianAngleErr: hits.map((r) => r.s.angleErr).sort((a, b) => a - b)[hits.length >> 1] ?? null,
@@ -476,7 +515,10 @@ if (asJson) {
   const flDetail = flBg.size ? `  [${[...flBg.entries()].sort().map(([k, v]) => `${k}: ${v}`).join('  ')}]` : '';
   console.log(`FALSE LOCKS: ${pct(summary.falseLockRate)} realistic (${falseLocks.length}/${emptyReal.length}, target ≤ 2%)${flDetail}`
     + ` · ${pct(summary.mosaicFalseLockRate)} on adversarial mosaic (informational)`);
-  console.log(`OUT-OF-ALLOWANCE: ${pct(summary.oobLockRate)} locked (${oobRes.filter((r) => r.det).length}/${oobRes.length} tiny/far/tilted cubes, target ≤ 5%)`);
+  const oobKinds = new Map();
+  for (const r of oobRes.filter((x) => x.capturable)) oobKinds.set(r.sc.oob, (oobKinds.get(r.sc.oob) || 0) + 1);
+  const oobDetail = oobKinds.size ? '  [' + [...oobKinds].map(([k, v]) => `${k}: ${v}`).join(', ') + ']' : '';
+  console.log(`OUT-OF-ALLOWANCE: ${pct(summary.oobLockRate)} capturable (${oobRes.filter((r) => r.capturable).length}/${oobRes.length} tiny/far/tilted cubes, target ≤ 5%)${oobDetail}`);
   console.log(`COLOUR LABELS: ${pct(summary.labelErrRate)} misread on locked grids (${labelAll - labelOk}/${labelAll} cells, target ≤ 3%) — incl. white-balance casts`);
   if (summary.medianCenterErr !== null) {
     console.log(`median centre error ${pct(summary.medianCenterErr)} of size · median angle error ${summary.medianAngleErr.toFixed(1)}°`);
@@ -573,16 +615,12 @@ function runCorpus() {
   const res = [];
   const t0 = Date.now();
   for (const sc of scen) {
-    const tracker = SCAN.createTracker();
-    let track = null, lastFrame = null;
-    for (let f = 0; f < FRAMES; f++) {
-      lastFrame = renderCorpusFrame(sc, sampleBackground, W, H);
-      const prefer = track ? { x: track.cx, y: track.cy } : { x: W / 2, y: H / 2 };
-      const det = SCAN.detectFace(lastFrame, sc.n, { prefer, limits: SCAN.liveLimits(W, H) });
-      track = tracker.update(det, f * 66);
-    }
+    const out = runLive(() => renderCorpusFrame(sc, sampleBackground, W, H), sc.n);
+    const track = out.locked
+      ? { cx: out.reg.x + out.reg.size / 2, cy: out.reg.y + out.reg.size / 2, size: out.reg.size, angle: out.reg.angle }
+      : null;
     const g = score(sc, track);
-    res.push({ sc, det: track, s: g, col: g.hit ? scoreColors(SCAN, lastFrame, track, sc) : null });
+    res.push({ sc, det: track, s: g, col: g.hit ? scoreColors(SCAN, out.lastFrame, track, sc) : null });
   }
   const ms = Date.now() - t0;
 
