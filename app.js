@@ -1561,6 +1561,7 @@
     active: false, scanMode: '3', step: 0, captures: [], signatures: [],
     stream: null, raf: 0, stable: 0, lastSig: '', cooldownUntil: 0,
     sampleCanvas: document.createElement('canvas'),
+    softPoses: [], softDet: null,
     detectCanvas: document.createElement('canvas'),
     photo: { img: null, px: null, rect: null, drag: null },
     live: false,
@@ -1616,6 +1617,7 @@
   async function startScan() {
     scan.scanMode = mode;
     scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
+    scan.softPoses = []; scan.softDet = null; scan.refusal = null;
     scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
     scan.stableSince = 0; scan.movedSinceCapture = false; scan.lastDetAt = 0;
     scan.track = null; scan.tracker.reset(); scan.frame = 0; scan.acc = null;
@@ -1804,11 +1806,24 @@
       : { x: (g.x + g.size / 2) / 2, y: (g.y + g.size / 2) / 2 };
     const limits = SCAN.liveLimits(small.width, small.height,
       { guideSize: g.size / 2, lockedSize: t ? t.size / 2 : 0 });
-    const det = SCAN.detectFace(small, n, { prefer, limits });
-    scan.track = scan.tracker.update(det && {
+    const ref = {};
+    const det = SCAN.detectFace(small, n, { prefer, limits, refusals: ref });
+    // a cube-like candidate was seen but refused by the allowance — keep the
+    // reason briefly so the status can say what to adjust
+    scan.refusal = !det && ref.refused ? { ...ref.refused, at: now, limits } : (det ? null : scan.refusal);
+    // guide-anchored soft detection: some real cubes defeat the lattice
+    // detector entirely (a white column of a gapless cube on a light table
+    // never segments), yet the user has deliberately filled the guide and the
+    // sampled colours are steady. scanFrame promotes that steadiness into
+    // `softDet` (marked single, like a plain-face lock, so auto-capture still
+    // demands visible border/notch evidence) — it feeds the tracker only when
+    // the real detector has nothing, and never while a refusal explains why.
+    const soft = !det && !scan.refusal && scan.softDet;
+    scan.track = scan.tracker.update(det ? {
       cx: det.cx * 2, cy: det.cy * 2, size: det.size * 2, angle: det.angle,
       count: det.count, total: det.total, single: det.single,
-    }, now);
+    } : (soft || null), now);
+    scan.softDet = null;
   }
   // the square currently used for sampling, in sample-canvas coords
   function currentRect(f) {
@@ -1850,7 +1865,10 @@
       ctx.beginPath(); ctx.moveTo(-s / 2 + i * cs, -s / 2); ctx.lineTo(-s / 2 + i * cs, s / 2); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(-s / 2, -s / 2 + i * cs); ctx.lineTo(s / 2, -s / 2 + i * cs); ctx.stroke();
     }
-    ctx.globalAlpha = 1;
+    // while searching (dashed guide, nothing locked) the label dots are a
+    // best guess over whatever is under the guide — possibly two faces of a
+    // rotated cube, or the table — so fade them rather than present a read
+    ctx.globalAlpha = dashed ? 0.35 : 1;
     if (labels) {
       labels.forEach((l, i) => {
         // screen columns run the other way when the preview is mirrored
@@ -1908,13 +1926,36 @@
       // the tracker smooths (and the detector only runs every few frames), so
       // under handheld jiggle its pose lags the cube — snap the sampling rect
       // to the current frame before reading colours, so samples and the drawn
-      // grid stick to the stickers themselves
-      const rect = tracked ? SCAN.snapRect(fr.px, currentRect(fr.f), n) : currentRect(fr.f);
+      // grid stick to the stickers themselves. While unlocked the snap starts
+      // from the guide square: the drawn grid hugs whatever cube-like thing
+      // sits under it, and its steadiness feeds the soft lock below.
+      const rect = SCAN.snapRect(fr.px, currentRect(fr.f), n);
       const res = SCAN.sampleGrid(fr.px, rect, n);
       const labels = res.cells.map((c) => SCAN.hueClass(c));
       const allKnown = labels.every((l) => l !== null);
       const calm = res.cellVar.filter((x) => x < 1100).length >= n * n - 1;
       const bordered = res.borderDarkRatio >= 0.3;
+      // guide-anchored soft lock: some real cubes defeat the lattice detector
+      // (gapless tiles merge into monochrome blobs; a white column on a light
+      // table never segments) — but a deliberately aimed cube shows up as a
+      // STEADY snapped pose with calm, fully-classified, multi-colour
+      // samples. Six consecutive steady frames forge a plain-face detection
+      // for the tracker (consumed in updateTrack; auto-capture from such a
+      // lock still demands border/notch evidence, like any plain-face lock).
+      if (!tracked && allKnown && calm && new Set(labels).size >= 2) {
+        scan.softPoses.push({ cx: rect.x + rect.size / 2, cy: rect.y + rect.size / 2, size: rect.size, angle: rect.angle || 0 });
+        if (scan.softPoses.length > 6) scan.softPoses.shift();
+        if (scan.softPoses.length === 6) {
+          const rng = (k) => Math.max(...scan.softPoses.map((p) => p[k])) - Math.min(...scan.softPoses.map((p) => p[k]));
+          if (rng('cx') <= rect.size * 0.04 && rng('cy') <= rect.size * 0.04
+              && rng('size') <= rect.size * 0.05 && rng('angle') <= 0.05) {
+            const last = scan.softPoses[scan.softPoses.length - 1];
+            scan.softDet = { cx: last.cx, cy: last.cy, size: last.size, angle: last.angle, count: n * n, total: n * n, single: true };
+          }
+        }
+      } else {
+        scan.softPoses.length = 0;
+      }
       const sig = labels.join('');
       // signatures are compared with one cell of tolerance everywhere: real
       // cameras flicker a borderline sticker between two hues, and one noisy
@@ -1989,7 +2030,24 @@
         statusKind = 'ok';
       } else if (!tracked) {
         state = 'searching';
-        statusText = now - scan.startedAt > 1500 ? '🔍 Looking for the cube — fill the dashed square, flat and straight' : '🔍 Looking for the cube…';
+        // a cube-like candidate refused by the acquisition allowance beats
+        // every other guess about what is wrong — it says exactly what to
+        // adjust. Next best: several distinct cube colours under the guide
+        // but no lattice (the cube is there but turned, showing two faces).
+        const REFUSE_MSG = {
+          far: '🎯 Found it — centre the cube in the dashed square',
+          small: '🤏 Found it — a little closer, fill the dashed square',
+          big: '↕ Found it — a little farther back, fit it inside the square',
+          tilted: '📐 Found it — straighten the cube (hold it square, not diamond)',
+        };
+        const refusal = scan.refusal && now - scan.refusal.at < 900 ? scan.refusal : null;
+        const distinct = new Set(labels.filter((l) => l !== null)).size;
+        statusText = refusal ? REFUSE_MSG[refusal.why]
+          : now - scan.startedAt <= 1500 ? '🔍 Looking for the cube…'
+            : allKnown && distinct >= 2
+              ? '🔍 Almost — turn the cube so ONE face, flat to the camera, fills the square'
+              : '🔍 Looking for the cube — fill the dashed square, flat and straight';
+        if (refusal) statusKind = 'warn';
       } else if (gates) {
         state = 'capturing';
         statusText = 'Hold still…';
@@ -2035,6 +2093,14 @@
         drawPill(ctx,
           `trk${b(tracked)} lat${b(latticeLock)} known${b(allKnown)} calm${b(calm)} brd${b(bordered)} ctr${b(centerOK)} dup${dup ? '!' : '·'} ${scan.stable}f/${Math.round(now - scan.stableSince)}ms`,
           gcx, Math.min(draw.height - 118, gcy + s * 0.72 + 34));
+        const rf = scan.refusal;
+        if (!tracked && rf && now - rf.at < 900) {
+          // the candidate the allowance refused, vs the allowance itself
+          const L = rf.limits;
+          drawPill(ctx,
+            `ref:${rf.why} sz${Math.round(rf.size)}[${Math.round(L.minSize)}-${Math.round(L.maxSize)}] d${Math.round(rf.dist)}/${Math.round(L.maxDist)} a${Math.round((rf.angle * 180) / Math.PI)}°/${Math.round((L.maxTilt * 180) / Math.PI)}°`,
+            gcx, Math.min(draw.height - 88, gcy + s * 0.72 + 64));
+        }
       }
       if (held && now >= scan.cooldownUntil) {
         const k = scan.acc.n;
@@ -2327,6 +2393,7 @@
       await waitIdle(); exitPlayback(); clearMsg();
       scan.scanMode = mode;
       scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
+    scan.softPoses = []; scan.softDet = null; scan.refusal = null;
       scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
       scan.track = null; scan.tracker.reset(); scan.frame = 0; scan.acc = null;
       scan.stableSince = 0; scan.movedSinceCapture = false; scan.lastDetAt = 0;
@@ -2343,6 +2410,7 @@
       o = o || {};
       scan.scanMode = mode;
       scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
+    scan.softPoses = []; scan.softDet = null; scan.refusal = null;
       scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
       scan.track = null; scan.tracker.reset(); scan.frame = 0; scan.acc = null;
       scan.stableSince = 0; scan.movedSinceCapture = false; scan.lastDetAt = 0;
