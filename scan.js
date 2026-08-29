@@ -187,7 +187,28 @@ const SCAN = (() => {
         if (p) { nodeDark += cellLum / cells - (p[0] + p[1] + p[2]) / 3; nodes++; }
       }
     }
-    return (probes ? -mismatch / probes : 0) + (nodes ? (nodeDark / nodes) * 0.3 : 0);
+    // the rect's own outer boundary: just-inside points must match their edge
+    // cell, just-outside points must NOT. This is the only alignment signal a
+    // SOLID single-colour face offers (its interior gives the probes above
+    // nothing), and it sharpens edge alignment for every other face too.
+    let edge = 0, en = 0;
+    const eo = cs * 0.16;
+    for (const f of [0.2, 0.5, 0.8]) {
+      const idx = Math.min(n - 1, Math.floor(f * n));
+      for (const [inPt, outPt, m] of [
+        [[eo, f * rect.size], [-eo, f * rect.size], means[idx * n]],
+        [[rect.size - eo, f * rect.size], [rect.size + eo, f * rect.size], means[idx * n + (n - 1)]],
+        [[f * rect.size, eo], [f * rect.size, -eo], means[idx]],
+        [[f * rect.size, rect.size - eo], [f * rect.size, rect.size + eo], means[(n - 1) * n + idx]],
+      ]) {
+        if (!m) continue;
+        const pIn = rgbAt(inPt[0], inPt[1]), pOut = rgbAt(outPt[0], outPt[1]);
+        if (pIn && pOut) { edge += Math.min(l1(pOut, m), 90) - l1(pIn, m); en++; }
+      }
+    }
+    return (probes ? -mismatch / probes : 0)
+      + (nodes ? (nodeDark / nodes) * 0.3 : 0)
+      + (en ? (edge / en) * 0.5 : 0);
   }
 
   function snapRect(px, rect, n) {
@@ -227,6 +248,30 @@ const SCAN = (() => {
       }
     }
     return best;
+  }
+
+  // Fraction of a ring of samples just OUTSIDE the rect that differ clearly
+  // from the face's mean colour. A real cube face fills the rect and the
+  // table/room shows just beyond its edge; a wall of one colour does not.
+  // This is the evidence that lets a SOLID single-colour face (solved cube,
+  // gapless, no seams to see) count as an object rather than a wall.
+  function outerDiffers(px, rect, mean) {
+    const ang = rect.angle || 0, ca = Math.cos(ang), sa = Math.sin(ang);
+    const ccx = rect.x + rect.size / 2, ccy = rect.y + rect.size / 2;
+    let diff = 0, tot = 0;
+    for (const [ux, uy] of [
+      [-0.62, -0.4], [-0.62, 0], [-0.62, 0.4], [0.62, -0.4], [0.62, 0], [0.62, 0.4],
+      [-0.4, -0.62], [0, -0.62], [0.4, -0.62], [-0.4, 0.62], [0, 0.62], [0.4, 0.62],
+    ]) {
+      const lx = ux * rect.size, ly = uy * rect.size;
+      const X = Math.round(ccx + ca * lx - sa * ly), Y = Math.round(ccy + sa * lx + ca * ly);
+      if (X < 0 || Y < 0 || X >= px.width || Y >= px.height) continue;
+      const o = (Y * px.width + X) * 4;
+      const d = Math.abs(px.data[o] - mean[0]) + Math.abs(px.data[o + 1] - mean[1]) + Math.abs(px.data[o + 2] - mean[2]);
+      if (d / 3 > 55) diff++;
+      tot++;
+    }
+    return tot ? diff / tot : 0;
   }
 
   // ---------- sampling a grid from raw pixel data ----------
@@ -1420,7 +1465,7 @@ const SCAN = (() => {
   }
 
   return {
-    rgbToHsv, featOf, dist2, hueClass, normalizeCapture, normalizeAll, sampleGrid, snapRect, snapScore, downsample2, detectFace,
+    rgbToHsv, featOf, dist2, hueClass, normalizeCapture, normalizeAll, sampleGrid, snapRect, snapScore, outerDiffers, downsample2, detectFace,
     createTracker, wrapAngle, liveLimits,
     PROTO_FACES, faceletIndex, gridN, stepInfo, assignColors, applyToPaint,
     rotateGrid, arrangeLetters, repairOrder, cornersConsistent,
