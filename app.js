@@ -1662,7 +1662,9 @@
     scan.mirror = saved !== null ? saved === '1' : facing !== 'environment';
     scan.live = true;
     scan.startedAt = performance.now();
+    scan.videoLayout = '';
     scanEls.video.style.display = '';
+    layoutVideo();
     scanEls.manual.style.display = '';
     scanEls.mirror.style.display = '';
     // flashlight, where the camera supports it (mostly phone back cameras)
@@ -1719,6 +1721,8 @@
     cancelAnimationFrame(scan.raf);
     if (scan.stream) { for (const t of scan.stream.getTracks()) t.stop(); scan.stream = null; }
     scanEls.video.srcObject = null;
+    scan.videoLayout = '';
+    scanEls.video.removeAttribute('style');   // back to the CSS fallback box
     scan.live = false;
     scan.source = null;
     scan.photo.px = null;   // release the cached photo pixels
@@ -1751,6 +1755,31 @@
       offX: (w * scale - innerWidth) / 2,
       offY: (h * scale - innerHeight) / 2,
     };
+  }
+  // iOS Safari sometimes renders a camera stream letterboxed inside the
+  // element instead of honouring object-fit: cover (WebKit's long-standing
+  // object-fit-on-live-video bugs, worst around the rotated first frames),
+  // leaving the preview as a small strip in the middle of the screen. So the
+  // element never gets to rely on object-fit: its box is sized here with the
+  // exact cover math videoMapping uses — the box's aspect equals the frame's,
+  // every object-fit value renders identically, and the preview always sits
+  // precisely where the sampling geometry assumes it does. Re-checked every
+  // frame (cheap once cached) so rotation and late metadata are caught.
+  function layoutVideo() {
+    if (!scan.stream) return;   // synthetic sources drive a hidden video
+    const { w, h } = frameSource();
+    if (!w || !h) return;
+    const scale = Math.max(innerWidth / w, innerHeight / h);
+    const key = w + 'x' + h + '@' + innerWidth + 'x' + innerHeight;
+    if (scan.videoLayout === key) return;
+    scan.videoLayout = key;
+    const st = scanEls.video.style;
+    st.width = w * scale + 'px';
+    st.height = h * scale + 'px';
+    st.left = (innerWidth - w * scale) / 2 + 'px';
+    st.top = (innerHeight - h * scale) / 2 + 'px';
+    st.right = 'auto';
+    st.bottom = 'auto';
   }
   function sampleToScreen(r, f) {
     const { k, offX, offY } = videoMapping(f);
@@ -1897,6 +1926,7 @@
   }
   // one frame of the live scanner: sample, track, gate, draw, maybe capture
   function scanFrame() {
+    layoutVideo();
     const draw = scanEls.draw;
     if (draw.width !== innerWidth || draw.height !== innerHeight) { draw.width = innerWidth; draw.height = innerHeight; }
     const ctx = draw.getContext('2d');
