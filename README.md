@@ -39,7 +39,7 @@ differently. The interesting parts:
 
 | File | What it is |
 |---|---|
-| `scan.js` | Camera scanner: blob segmentation → lattice fitting → physical-evidence gates (sticker seams / corner notches) → temporal tracker |
+| `scan.js` | Camera scanner: guide-anchored edge registration (live) and blob segmentation → lattice fitting (photo mode), plus HSV classification and the six-face colour assignment |
 | `cube.js` | 3×3/2×2 engine + layer-by-layer and two-phase solvers |
 | `cube4.js`, `tpr4.js`, `worker4.js` | 4×4 engine and phased-reduction solver: beam-portfolio fast path plus a deep engine (exact phase 3 by IDA* over an edge-pairing permutation table, parity solved structurally) racing colour-axis rotations across workers |
 | `tables/` | Pre-built solver tables (nibble-packed, gzipped); regenerate with `tools/gen-tables.mjs` |
@@ -80,7 +80,7 @@ CubeSnap's solvers stand on decades of public cube theory. **No third-party code
 - **David Singmaster** — the U/D/F/B/R/L face-turn notation used throughout the app and this codebase.
 - **The cubing community's pattern folklore** — checkerboard, cube-in-cube, superflip and the other classics in the pattern library are traditional algorithms of unknown or collective authorship (superflip's fame dates to Michael Reid's 1995 proof that it needs 20 moves); each one is re-verified against the engine before it is shown.
 
-The camera scanner (`scan.js`) was built for this project from standard computer-vision building blocks (blob segmentation, lattice fitting, HSV classification) without reference to any existing scanner implementation.
+The camera scanner (`scan.js`) was built for this project from standard computer-vision building blocks (edge-profile registration, blob segmentation, lattice fitting, HSV classification) without reference to any existing scanner implementation.
 
 ### On the 4×4 deep engine and TPR
 

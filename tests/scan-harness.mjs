@@ -29,9 +29,10 @@
 // turn). Anything else returned by the detector is a MISS with a bad fit.
 //
 // Acceptance targets (the "done" bar agreed for the scanner):
-//   - lock rate ≥ 90% on realistic frames (12–70% scale, ±30° tilt, clean or
-//     irregular-clutter backgrounds; the adversarial "mosaic" background — a
-//     perfect wall of sticker-sized squares — is reported separately, where
+//   - lock rate ≥ 90% on realistic frames (cube inside the aiming allowance:
+//     size within ±10% of the guide, tilt under ~10°, roughly centred — clean
+//     or irregular-clutter backgrounds; the adversarial "mosaic" background —
+//     a perfect wall of sticker-sized squares — is reported separately, where
 //     returning null is acceptable behaviour)
 //   - bad-fit rate ≤ 2% on ALL cube frames (a confident box in the wrong
 //     place is worse than no box: it captures wrong colours)
@@ -242,12 +243,17 @@ function makeScenarios(seed) {
   const rand = rng(seed);
   const out = [];
   const minDim = Math.min(W, H);
-  // the live scanner enforces a tight acquisition allowance (SCAN.liveLimits):
-  // near the guide-square centre, within ±15% of the guide size (default
-  // 0.55·minDim, so sizes ~0.47–0.63), tilted < 10°. The should-lock
-  // scenarios stay inside it; a separate out-of-allowance set below verifies
-  // everything else is refused rather than snapped to.
-  const scales = [0.48, 0.51, 0.55, 0.59, 0.62];
+  // the live registration accepts a cube within ±10% of the guide's size
+  // and near its centre. The should-lock scenarios stay inside that; a
+  // separate out-of-allowance set below verifies everything else is refused
+  // (not capturable) rather than force-fitted. The sweep's bottom edge sits
+  // at −4% rather than −10% of the guide: on a stickered cube the plastic
+  // outline can vanish into the background, and the measurable square — the
+  // sticker lattice — is 5–10% smaller than the plastic (worst on 2×2s).
+  // A plastic square at the raw −10% boundary therefore measures below the
+  // allowance and is rightly refused; the live "a little closer" hint steers
+  // the user off that edge, so the sweep tests where guided aiming settles.
+  const scales = [0.53, 0.545, 0.56, 0.58, 0.6];
   const angles = [0, 3, 5, 7, 9];
   const backgrounds = ['gray', 'dark', 'wood', 'cluttered', 'mosaic', 'tilewall'];
   const clutterScene = () => clutterRects(rand);
@@ -310,7 +316,7 @@ function makeScenarios(seed) {
   for (const kind of ['small', 'big', 'far', 'tilted']) {
     for (const background of ['gray', 'wood', 'cluttered']) {
       for (let i = 0; i < 6; i++) {
-        const scale = kind === 'small' ? 0.36 : kind === 'big' ? 0.72 : 0.55;
+        const scale = kind === 'small' ? 0.45 : kind === 'big' ? 0.66 : 0.55;
         const size = scale * minDim;
         const angleDeg = kind === 'tilted' ? 26 + rand() * 8 : rand() * 6;
         const cx = kind === 'far'
@@ -400,13 +406,13 @@ function runLive(renderer, n) {
     lastFrame = renderer();
     const raw = SCAN.registerRect(lastFrame, GUIDE, reg);
     const cl = (v, c, d) => Math.min(c + d, Math.max(c - d, v));
-    if (Math.abs(raw.size - cl(raw.size, GUIDE.size, GUIDE.size * 0.18)) > 2) raw.strength = 0;
-    raw.size = cl(raw.size, GUIDE.size, GUIDE.size * 0.18);
+    // forced-clamp refusal, relative tolerance — mirrors app.js updateReg
+    const forced = GUIDE.size * 0.035;
+    if (Math.abs(raw.size - cl(raw.size, GUIDE.size, GUIDE.size * 0.1)) > forced) raw.strength = 0;
+    raw.size = cl(raw.size, GUIDE.size, GUIDE.size * 0.1);
     const cx = cl(raw.x + raw.size / 2, GUIDE.x + GUIDE.size / 2, GUIDE.size * 0.15);
     const cy = cl(raw.y + raw.size / 2, GUIDE.y + GUIDE.size / 2, GUIDE.size * 0.15);
-    // a fit that had to be FORCED into the allowance is not the cube filling
-    // the guide — refuse it rather than sample a wrong grid
-    if (Math.abs(cx - (raw.x + raw.size / 2)) > 2 || Math.abs(cy - (raw.y + raw.size / 2)) > 2) raw.strength = 0;
+    if (Math.abs(cx - (raw.x + raw.size / 2)) > forced || Math.abs(cy - (raw.y + raw.size / 2)) > forced) raw.strength = 0;
     raw.x = cx - raw.size / 2;
     raw.y = cy - raw.size / 2;
     raw.angle = cl(raw.angle, 0, 0.35);

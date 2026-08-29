@@ -1798,13 +1798,17 @@
     const g = screenToSample(guideRect(), fr.f);
     const raw = SCAN.registerRect(fr.px, g, scan.reg);
     const cl = (v, c, d) => Math.min(c + d, Math.max(c - d, v));
-    if (Math.abs(raw.size - cl(raw.size, g.size, g.size * 0.18)) > 2) raw.strength = 0;
-    raw.size = cl(raw.size, g.size, g.size * 0.18);
+    // a fit that had to be FORCED into the allowance is not the cube filling
+    // the guide — refuse it rather than sample a wrong grid. The tolerance is
+    // relative so hand jiggle at the very edge of the allowance is absorbed
+    // (a genuinely out-of-allowance cube overshoots the clamp by several
+    // times this) at any sample resolution.
+    const forced = g.size * 0.035;
+    if (Math.abs(raw.size - cl(raw.size, g.size, g.size * 0.1)) > forced) raw.strength = 0;
+    raw.size = cl(raw.size, g.size, g.size * 0.1);
     const cx = cl(raw.x + raw.size / 2, g.x + g.size / 2, g.size * 0.15);
     const cy = cl(raw.y + raw.size / 2, g.y + g.size / 2, g.size * 0.15);
-    // a fit that had to be FORCED into the allowance is not the cube filling
-    // the guide — refuse it rather than sample a wrong grid
-    if (Math.abs(cx - (raw.x + raw.size / 2)) > 2 || Math.abs(cy - (raw.y + raw.size / 2)) > 2) raw.strength = 0;
+    if (Math.abs(cx - (raw.x + raw.size / 2)) > forced || Math.abs(cy - (raw.y + raw.size / 2)) > forced) raw.strength = 0;
     raw.x = cx - raw.size / 2;
     raw.y = cy - raw.size / 2;
     raw.angle = cl(raw.angle, 0, 0.35);
@@ -2039,7 +2043,7 @@
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
       ctx.fill('evenodd');
       ctx.save();
-      ctx.strokeStyle = tracked ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.9)';
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';   // the guide never fades — it is the constant reference
       ctx.lineWidth = 2.5;
       ctx.setLineDash([10, 8]);
       ctx.strokeRect(tg.x, tg.y, tg.size, tg.size);
