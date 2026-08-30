@@ -67,22 +67,6 @@ const SCAN = (() => {
     return 'L';                            // magenta-ish -> red
   }
 
-  // gray-world normalization of one capture's samples (list of [r,g,b])
-  function normalizeCapture(samples) {
-    let mr = 0, mg = 0, mb = 0;
-    for (const s of samples) { mr += s[0]; mg += s[1]; mb += s[2]; }
-    const n = samples.length;
-    mr /= n; mg /= n; mb /= n;
-    const m = (mr + mg + mb) / 3;
-    const gr = m / Math.max(1e-3, mr), gg = m / Math.max(1e-3, mg), gb = m / Math.max(1e-3, mb);
-    // damp the correction (full gray-world overcorrects colorful scenes)
-    const damp = (x) => 1 + (x - 1) * 0.55;
-    const fr = damp(gr), fg = damp(gg), fb = damp(gb);
-    return samples.map((s) => [
-      Math.min(255, s[0] * fr), Math.min(255, s[1] * fg), Math.min(255, s[2] * fb),
-    ]);
-  }
-
   // gray-world normalisation across ALL captures at once: a whole cube has the
   // same number of stickers of every colour, so the pooled mean is a true gray
   // reference — unlike a single face, which may be mostly one colour.
@@ -370,24 +354,6 @@ const SCAN = (() => {
       }
     }
     return { cells, cellVar, borderDarkRatio: checks ? darker / checks : 0 };
-  }
-
-  // 2×2 box downsample of an RGBA frame (the detector runs on a small frame)
-  function downsample2(px) {
-    const W = px.width >> 1, H = px.height >> 1, src = px.data;
-    const out = new Uint8ClampedArray(W * H * 4);
-    const rowBytes = px.width * 4;
-    for (let y = 0; y < H; y++) {
-      const r0 = 2 * y * rowBytes, r1 = r0 + rowBytes;
-      for (let x = 0; x < W; x++) {
-        const a = r0 + x * 8, b = r1 + x * 8, o = (y * W + x) * 4;
-        out[o] = (src[a] + src[a + 4] + src[b] + src[b + 4]) >> 2;
-        out[o + 1] = (src[a + 1] + src[a + 5] + src[b + 1] + src[b + 5]) >> 2;
-        out[o + 2] = (src[a + 2] + src[a + 6] + src[b + 2] + src[b + 6]) >> 2;
-        out[o + 3] = 255;
-      }
-    }
-    return { data: out, width: W, height: H };
   }
 
   // ---------- automatic face detection ----------
@@ -1410,7 +1376,7 @@ const SCAN = (() => {
   }
 
   return {
-    rgbToHsv, featOf, dist2, hueClass, normalizeCapture, normalizeAll, sampleGrid, registerRect, downsample2, detectFace,
+    rgbToHsv, featOf, dist2, hueClass, normalizeAll, sampleGrid, registerRect, detectFace,
     PROTO_FACES, faceletIndex, gridN, stepInfo, assignColors, applyToPaint,
     rotateGrid, arrangeLetters, repairOrder, cornersConsistent,
   };

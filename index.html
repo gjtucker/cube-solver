@@ -146,7 +146,7 @@
         </div>
         <div class="progress">
           <span id="progText">Move 0 / 0</span>
-          <span class="speed">🐢 <input type="range" id="speed" min="1" max="10" value="5"> 🐇</span>
+          <span class="speed">🐢 <input type="range" id="speed" min="1" max="10" value="5" aria-label="Playback speed"> 🐇</span>
         </div>
         <div class="bigdone" id="bigdone">🎉 Cube solved — nice work!</div>
         <div class="stagelist" id="stagelist"></div>
@@ -180,9 +180,9 @@
   <canvas id="scanDraw"></canvas>
   <div class="scanTop">
     <div class="scanProgress" id="scanProgress"></div>
-    <button class="scanClose" id="scanTorch" title="Flashlight" style="display:none">🔦</button>
-    <button class="scanClose" id="scanMirror" title="Mirror the preview">⇄</button>
-    <button class="scanClose" id="scanClose">✕</button>
+    <button class="scanClose" id="scanTorch" title="Flashlight" aria-label="Flashlight" style="display:none">🔦</button>
+    <button class="scanClose" id="scanMirror" title="Mirror the preview" aria-label="Mirror the preview">⇄</button>
+    <button class="scanClose" id="scanClose" aria-label="Close the scanner">✕</button>
   </div>
   <div class="scanBottom">
     <div class="scanStatus" id="scanStatus"></div>
@@ -208,8 +208,8 @@
     <div class="photoBar">
       <span class="photoLabel" id="photoLabel">Drag the grid onto the cube face · sliders resize and rotate it</span>
       <div class="photoSliders">
-        <label>↔ size <input type="range" id="photoSize" min="10" max="95" value="60"></label>
-        <label>↻ tilt <input type="range" id="photoAngle" min="-45" max="45" value="0"></label>
+        <label>↔ size <input type="range" id="photoSize" min="10" max="95" value="60" aria-label="Grid size"></label>
+        <label>↻ tilt <input type="range" id="photoAngle" min="-45" max="45" value="0" aria-label="Grid tilt"></label>
       </div>
       <div class="btnrow" style="justify-content:center">
         <button class="btn primary" id="photoConfirm">✓ Use this face</button>

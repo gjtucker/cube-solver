@@ -608,7 +608,6 @@ const TPR4 = (() => {
   // =============================== solvers ===============================
   const CENTER_STICKER = C4.CENTERS.map((c) => c.idx);
   const CENTER_FACE = C4.CENTERS.map((c) => c.face);
-  const WING_STICKERS = C4.WINGS.map((w) => Object.values(w.stickers));
 
   function classMask24(state, scheme) {
     // 24-bit mask of positions holding UD-class colors
@@ -644,19 +643,6 @@ const TPR4 = (() => {
   function centersExact(state, scheme) {
     for (let i = 0; i < NC; i++) if (state[CENTER_STICKER[i]] !== scheme[CENTER_FACE[i]]) return false;
     return true;
-  }
-  // wing positions per color pair: fills pairs[12][2]
-  function wingPairs(state, pairsOut) {
-    const map = {};
-    let n = 0;
-    for (let i = 0; i < NW; i++) {
-      const st = WING_STICKERS[i];
-      const a = state[st[0]], b = state[st[1]];
-      const key = a < b ? a + b : b + a;
-      if (map[key] === undefined) { map[key] = n; pairsOut[n] = [i, -1]; n++; }
-      else pairsOut[map[key]][1] = i;
-    }
-    return n;
   }
 
   // greedy exact descent for phases 1 & 2 (phase 2 includes the parity bit)
