@@ -1616,7 +1616,7 @@
   // starts from the same blank session: no captures, no fit, no stable streak
   function resetScanSession() {
     scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
-    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.drawnG = null;
+    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false;
     scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
     scan.stableSince = 0; scan.movedSinceCapture = false;
     scan.frame = 0; scan.acc = null;
@@ -1720,7 +1720,7 @@
   });
   function stopScan() {
     scan.active = false;
-    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.drawnG = null;
+    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false;
     cancelAnimationFrame(scan.raf);
     if (scan.stream) { for (const t of scan.stream.getTracks()) t.stop(); scan.stream = null; }
     scanEls.video.srcObject = null;
@@ -1756,14 +1756,6 @@
       offX: (w * scale - innerWidth) / 2,
       offY: (h * scale - innerHeight) / 2,
     };
-  }
-  function sampleToScreen(r, f) {
-    const { k, offX, offY } = videoMapping(f);
-    let cx = (r.x + r.size / 2) * k - offX;
-    const cy = (r.y + r.size / 2) * k - offY, size = r.size * k;
-    let angle = r.angle || 0;
-    if (scan.mirror) { cx = innerWidth - cx; angle = -angle; }
-    return { x: cx - size / 2, y: cy - size / 2, size, angle };
   }
   function screenToSample(g, f) {
     const { k, offX, offY } = videoMapping(f);
@@ -2041,21 +2033,12 @@
         : info.hint;
       if (scanEls.hint.textContent !== hint) scanEls.hint.textContent = hint;
       // ---- overlay, per the fixed-target design ----
-      // the dashed TARGET never moves and is the whole story: the dim mask
-      // anchors to it, and the verdict lives in its colour — white while
-      // searching, green once the fit locks, amber when a capture gate
-      // blocks — with the hold-still countdown filling its border. The fit
-      // itself is never more than a whisper-thin outline: the user doesn't
-      // need to see the machinery, only that the scan is good.
-      let g = sampleToScreen(rect, fr.f);
-      // display deadband: ignore sub-2px wobble so the drawn fit sits still
-      const dg = scan.drawnG;
-      if (dg && Math.abs(dg.x - g.x) < 2 && Math.abs(dg.y - g.y) < 2
-          && Math.abs(dg.size - g.size) < 2 && Math.abs((dg.angle || 0) - (g.angle || 0)) < 0.012) {
-        g = dg;
-      } else {
-        scan.drawnG = g;
-      }
+      // NOTHING on screen moves: the dashed target and its grid lines are
+      // fixed, the dim mask anchors to them, and the verdict lives in their
+      // colour — white while searching, green once the fit locks, amber when
+      // a capture gate blocks — with the hold-still countdown filling the
+      // border. The live fit itself is never drawn: the user doesn't need to
+      // see the machinery, only that the scan is good.
       const tg = guideRect();
       const dim = tg;
       const s = dim.size, gcx = dim.x + s / 2, gcy = dim.y + s / 2;
@@ -2082,14 +2065,19 @@
         ctx.lineWidth = 6;
         ctx.strokeRect(tg.x, tg.y, tg.size, tg.size);
       }
-      ctx.restore();
-      ctx.save();
-      ctx.strokeStyle = tracked ? stateColor : '#ffffff';
-      ctx.globalAlpha = tracked ? 0.4 : 0.12 + 0.18 * scan.quality;
-      ctx.lineWidth = 2;
-      ctx.translate(g.x + g.size / 2, g.y + g.size / 2);
-      ctx.rotate(g.angle || 0);
-      ctx.strokeRect(-g.size / 2, -g.size / 2, g.size, g.size);
+      // faint fixed grid lines inside the guide — one cell per sticker, so
+      // the user can aim each sticker into its cell; they take the verdict
+      // colour with the border
+      ctx.setLineDash([]);
+      ctx.globalAlpha = tracked ? 0.5 : 0.3;
+      ctx.lineWidth = 1;
+      const cs2 = tg.size / n;
+      for (let i = 1; i < n; i++) {
+        ctx.beginPath();
+        ctx.moveTo(tg.x + i * cs2, tg.y); ctx.lineTo(tg.x + i * cs2, tg.y + tg.size);
+        ctx.moveTo(tg.x, tg.y + i * cs2); ctx.lineTo(tg.x + tg.size, tg.y + i * cs2);
+        ctx.stroke();
+      }
       ctx.restore();
       if (scan.debugUI) {
         // ?debug: fit quality + which auto-capture gate is failing right now
