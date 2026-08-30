@@ -181,7 +181,6 @@
       if (this.deepWarmed || typeof Worker === 'undefined') return;
       this.deepWarmed = true;
       this.loadTables().then((tables) => {
-        const TPR4 = window.TPR4;
         const n = this.deepWorkerCount();
         for (const w of this.getPool(n, tables)) this.call(w, { t: 'deepinit' }).catch(() => {});
       }).catch(() => {});
@@ -1613,13 +1612,19 @@
     if (scanEls.status.className !== cls) scanEls.status.className = cls;
   }
 
-  async function startScan() {
-    scan.scanMode = mode;
+  // every entry point into a scan (camera, injected stream, synthetic frames)
+  // starts from the same blank session: no captures, no fit, no stable streak
+  function resetScanSession() {
     scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
     scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.drawnG = null;
     scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
     scan.stableSince = 0; scan.movedSinceCapture = false;
-    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.drawnG = null; scan.frame = 0; scan.acc = null;
+    scan.frame = 0; scan.acc = null;
+  }
+
+  async function startScan() {
+    scan.scanMode = mode;
+    resetScanSession();
     scan.mirror = false; scan.facing = '';
     scan.active = true;
     setScanStatus('', '');
@@ -2039,7 +2044,7 @@
             ? `That’s the ${COLOR_NAMES[centerRead]} face — show the ${COLOR_NAMES[expected]} one`
             : !allKnown
               ? 'A sticker reads too dark — add light or tilt out of shadow'
-              : 'Glare or blur on a sticker — tilt the cube slightly'
+              : 'Glare or blur on a sticker — tilt the cube slightly';
       }
       setScanStatus(statusText, statusKind);
       const hint = dup && scan.movedSinceCapture && allKnown && calm
@@ -2394,11 +2399,7 @@
     async scanStartWithStream(stream) {
       await waitIdle(); exitPlayback(); clearMsg();
       scan.scanMode = mode;
-      scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
-    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.drawnG = null;
-      scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
-      scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.drawnG = null; scan.frame = 0; scan.acc = null;
-      scan.stableSince = 0; scan.movedSinceCapture = false;
+      resetScanSession();
       scan.active = true;
       scanEls.overlay.classList.add('on');
       scanEls.photoStage.style.display = 'none';
@@ -2411,11 +2412,7 @@
     scanStartSynthetic(canvas, o) {
       o = o || {};
       scan.scanMode = mode;
-      scan.step = 0; scan.captures = []; scan.signatures = []; scan.captureLabels = [];
-    scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.drawnG = null;
-      scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
-      scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false; scan.drawnG = null; scan.frame = 0; scan.acc = null;
-      scan.stableSince = 0; scan.movedSinceCapture = false;
+      resetScanSession();
       scan.active = true; scan.live = true; scan.source = canvas;
       scan.mirror = !!o.mirror; scan.startedAt = performance.now();
       scanEls.overlay.classList.add('on');

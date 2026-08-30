@@ -226,7 +226,6 @@ const C4 = (() => {
 // =====================================================================
 
 (() => {
-  const OPPOSITE = { U: 'D', D: 'U', F: 'B', B: 'F', L: 'R', R: 'L' };
   const OLL_PARITY = "r2 B2 U2 l U2 r' U2 r U2 F2 r F2 l' B2 r2".split(' '); // flips the UF dedge
   const PLL_PARITY = "r2 U2 r2 U2 u2 r2 u2".split(' ');                      // swaps UF <-> UB dedges
   const M3 = { 0: 0, 1: 1, 2: 3 };
