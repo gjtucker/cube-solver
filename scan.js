@@ -199,10 +199,45 @@ const SCAN = (() => {
             const outer = outerFirst ? -pos : pos;
             const strength = inl.map((c) => c.strength).sort((x, y) => x - y)[inl.length >> 1];
             const key = per.size * 1e6 + outer;
-            if (!bestFit || key > bestFit.key) bestFit = { key, pos, slope: b2, strength };
+            if (!bestFit || key > bestFit.key) bestFit = { key, pos, slope: b2, strength, inl };
           }
         }
         if (!bestFit) return { pos: u0, strength: 0, slope: 0 };
+        // STEPPED edge (a sticky cube's shifted middle layer): the edge is two
+        // parallel segments a few px apart, and least squares through a step
+        // tilts the line — enough to flunk the straight-edge test and poison
+        // the tilt estimate, so the lock flickers. A genuine edge (straight
+        // or tilted) keeps its points ON the fitted line; large residuals
+        // that split cleanly into two tight parallel groups mean a step —
+        // report the dominant segment's own position and slope instead.
+        {
+          const { inl, slope } = bestFit;
+          const resid = inl.map((c) => c.at - (bestFit.pos + slope * c.v));
+          if (Math.max(...resid.map(Math.abs)) > 1.8 && inl.length >= 4) {
+            const lo = inl.filter((c, i) => resid[i] < 0), hi = inl.filter((c, i) => resid[i] >= 0);
+            const seg = (g) => {
+              if (g.length < 2) return null;
+              const mv = g.reduce((a, c) => a + c.v, 0) / g.length;
+              const ma = g.reduce((a, c) => a + c.at, 0) / g.length;
+              let sxy = 0, sxx = 0;
+              for (const c of g) { sxy += (c.v - mv) * (c.at - ma); sxx += (c.v - mv) ** 2; }
+              const b = sxx ? sxy / sxx : 0;
+              const spread = Math.max(...g.map((c) => Math.abs(c.at - (ma + b * (c.v - mv)))));
+              return { n: g.length, pos: ma - b * mv, slope: b, spread };
+            };
+            const a = seg(lo), b = seg(hi);
+            if (a && b && a.spread <= 1.5 && b.spread <= 1.5) {
+              const major = a.n !== b.n ? (a.n > b.n ? a : b)
+                : (outerFirst ? -a.pos : a.pos) > (outerFirst ? -b.pos : b.pos) ? a : b;
+              bestFit.pos = major.pos;
+              // the two segments are parallel to the scan frame by
+              // construction; a 2-3 point cluster regression only adds
+              // noise (±0.08 slope from ±0.7 px), which flickers the
+              // straight-edge test — the step's true slope is zero
+              bestFit.slope = 0;
+            }
+          }
+        }
         return { pos: bestFit.pos, strength: bestFit.strength, slope: bestFit.slope };
       };
       return { L: side(-half, true, true), R: side(half, true, false), T: side(-half, false, true), B: side(half, false, false) };

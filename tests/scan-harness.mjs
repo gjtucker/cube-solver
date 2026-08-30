@@ -132,46 +132,59 @@ function renderFrame(sc) {
   const n = sc.n, size = sc.size, cell = size / n;
   const stickerHalf = (cell * sc.stickerFrac) / 2;
   const half = size / 2;
-  const bg = BACKGROUNDS[sc.background] || (() => [96, 96, 96]);
+  // colour of the face at face-local coords, or null outside the face
+  const faceColor = (u, v) => {
+    if (Math.abs(u) > half || Math.abs(v) > half) return null;
+    const col = Math.min(n - 1, Math.floor((u + half) / cell));
+    const row = Math.min(n - 1, Math.floor((v + half) / cell));
+    if (sc.style === 'gapless') {
+      // gapless stickerless cube: tiles touch directly (no seams at all —
+      // same-colour neighbours are indistinguishable), but the rounded
+      // tile corners expose a dark notch at every 4-tile junction
+      const gu = Math.round((u + half) / cell), gv = Math.round((v + half) / cell);
+      if (gu >= 1 && gu <= n - 1 && gv >= 1 && gv <= n - 1) {
+        const du = (u + half) - gu * cell, dv = (v + half) - gv * cell;
+        const notchR = cell * 0.14;
+        if (du * du + dv * dv < notchR * notchR) return [25, 25, 28];
+      }
+      return STICKER_RGB[sc.face[row * n + col]];
+    }
+    // stickered: plastic shows between the sticker patches
+    const cu = u + half - (col + 0.5) * cell, cv = v + half - (row + 0.5) * cell;
+    return Math.abs(cu) <= stickerHalf && Math.abs(cv) <= stickerHalf
+      ? STICKER_RGB[sc.face[row * n + col]] : sc.plastic;
+  };
+  const st = sc.sticky;
+  const stc = st ? Math.cos(st.tilt) : 1, sts = st ? Math.sin(st.tilt) : 0;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
-      let rgbv;
+      let rgbv = null;
       // rotate into face-local coords
       const dx = x - sc.cx, dy = y - sc.cy;
       const u = ca * dx + sa * dy, v = -sa * dx + ca * dy;
-      if (sc.hasCube && Math.abs(u) <= half && Math.abs(v) <= half) {
-        const col = Math.min(n - 1, Math.floor((u + half) / cell));
-        const row = Math.min(n - 1, Math.floor((v + half) / cell));
-        if (sc.style === 'gapless') {
-          // gapless stickerless cube: tiles touch directly (no seams at all —
-          // same-colour neighbours are indistinguishable), but the rounded
-          // tile corners expose a dark notch at every 4-tile junction
-          rgbv = STICKER_RGB[sc.face[row * n + col]];
-          const gu = Math.round((u + half) / cell), gv = Math.round((v + half) / cell);
-          if (gu >= 1 && gu <= n - 1 && gv >= 1 && gv <= n - 1) {
-            const du = (u + half) - gu * cell, dv = (v + half) - gv * cell;
-            const notchR = cell * 0.14;
-            if (du * du + dv * dv < notchR * notchR) rgbv = [25, 25, 28];
+      if (sc.hasCube) {
+        if (st) {
+          // sticky cube: one middle band sits a few degrees skew from the
+          // rest of the face (rotated about the face centre). The band is
+          // drawn in its own rotated frame on top; where it has swung away
+          // from its slot, the slot shows dark inner plastic.
+          const ub0 = stc * u + sts * v, vb0 = -sts * u + stc * v;
+          const ub = st.axis === 'col' ? ub0 : ub0 - (st.shift || 0);
+          const vb = st.axis === 'col' ? vb0 - (st.shift || 0) : vb0;
+          const bandU = st.axis === 'col' ? ub : vb, bandV = st.axis === 'col' ? vb : ub;
+          const slotU = st.axis === 'col' ? u : v;
+          if (bandU >= st.range[0] && bandU <= st.range[1] && Math.abs(bandV) <= half) {
+            rgbv = faceColor(ub, vb);
+          } else if (slotU >= st.range[0] && slotU <= st.range[1] && Math.abs(u) <= half && Math.abs(v) <= half) {
+            rgbv = [22, 22, 25];   // exposed inner plastic under the shifted band
+          } else {
+            rgbv = faceColor(u, v);
           }
         } else {
-          // stickered: plastic shows between the sticker patches
-          const cu = u + half - (col + 0.5) * cell, cv = v + half - (row + 0.5) * cell;
-          if (Math.abs(cu) <= stickerHalf && Math.abs(cv) <= stickerHalf) {
-            rgbv = STICKER_RGB[sc.face[row * n + col]];
-          } else {
-            rgbv = sc.plastic;
-          }
+          rgbv = faceColor(u, v);
         }
-      } else if (sc.background === 'cluttered') {
-        // realistic desk clutter: scattered objects of varied size and colour
-        // over a wooden surface — objects, not a wall of tiles
-        rgbv = BACKGROUNDS.wood(x, y);
-        for (const r of sc.clutterRects) {
-          if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) rgbv = r.c;
-        }
-      } else {
-        rgbv = bg(x, y);
       }
+      if (!rgbv) rgbv = sampleBackground(x, y, sc);
       // lighting: global level + a left-right gradient
       const lum = sc.light * (1 + sc.gradient * ((x / W) - 0.5));
       let r = rgbv[0] * lum, g = rgbv[1] * lum, b = rgbv[2] * lum;
@@ -290,6 +303,46 @@ function makeScenarios(seed) {
                     amp: 90 + rand() * 90 }
                 : null,
               noise: 2 + rand() * 10,
+              rand,
+            });
+          }
+        }
+      }
+    }
+  }
+  // sticky-cube frames: one middle band of the face sits a few degrees skew
+  // from the rest (field report: a sticky cube whose layers don't square up
+  // perfectly). To the user this is still an aligned cube filling the guide,
+  // so these are realistic frames that must lock like any other.
+  for (const n of [3, 4, 2]) {
+    for (const scale of [0.55, 0.58]) {
+      for (const angleDeg of [0, 5, 9]) {
+        for (const background of ['gray', 'dark', 'wood', 'cluttered']) {
+          for (let variant = 0; variant < 2; variant++) {
+            const size = scale * minDim;
+            const cell = size / n;
+            const bandIdx = n === 3 ? 1 : n === 4 ? 1 + Math.floor(rand() * 2) : Math.floor(rand() * 2);
+            const lo = -size / 2 + bandIdx * cell;
+            const tilt = ((1.5 + rand() * 2.5) * Math.PI / 180) * (rand() < 0.5 ? -1 : 1);
+            // half the scenes also SHIFT the band along its axis — the layer
+            // protruding out of the silhouette is the mode that actually
+            // breaks a straight-line edge fit (a rotated band barely does)
+            const shift = rand() < 0.5 ? 0 : (3 + rand() * 5) * (rand() < 0.5 ? -1 : 1);
+            const offR = rand() * Math.min(minDim * 0.06, 20), offT = rand() * Math.PI * 2;
+            out.push({
+              n, scale, angleDeg, background, solved: false, hasCube: true,
+              clutterRects: background === 'cluttered' ? clutterScene() : null,
+              style: variant === 1 ? 'gapless' : 'stickered',
+              cx: W / 2 + Math.cos(offT) * offR, cy: H / 2 + Math.sin(offT) * offR, size,
+              angle: (angleDeg * Math.PI / 180) * (rand() < 0.5 ? -1 : 1),
+              face: randomFace(n, rand, false),
+              sticky: { axis: rand() < 0.5 ? 'col' : 'row', range: [lo, lo + cell], tilt, shift },
+              stickerFrac: 0.80 + rand() * 0.08,
+              plastic: [16, 16, 16],
+              light: 0.6 + rand() * 0.5,
+              gradient: (rand() - 0.5) * 0.4,
+              glare: null,
+              noise: 2 + rand() * 8,
               rand,
             });
           }
@@ -544,6 +597,7 @@ if (asJson) {
       return m >= s.n * s.n * 0.55 ? s.style + ':heavy' : s.style + ':mixed';
     }],
     ['solved faces', (s) => (s.solved ? 'solved' : 'mixed')],
+    ['layer align', (s) => (s.sticky ? 'sticky' : 'square')],
   ];
   for (const [name, fn] of dims) {
     const line = bucket(fn).map(([k, b]) => `${k}: ${pct(b.hit / b.total)}`).join('   ');
