@@ -1619,7 +1619,7 @@
     scan.reg = null; scan.regHist = []; scan.quality = 0; scan.lockedNow = false;
     scan.stable = 0; scan.lastSig = ''; scan.cooldownUntil = 0;
     scan.stableSince = 0; scan.movedSinceCapture = false;
-    scan.frame = 0; scan.acc = null;
+    scan.frame = 0; scan.acc = null; scan.crop = null;
   }
 
   async function startScan() {
@@ -1743,10 +1743,58 @@
   // The video is shown object-fit: cover, and mirrored for a front camera so
   // the preview moves the way the user does. Samples are always taken from the
   // unmirrored frame, so facelets keep their true left/right.
-  // frame source: the live video, or a canvas injected by the test hooks
+  // frame source: the live video, or a canvas injected by the test hooks.
+  // (w, h, sx, sy) describe the CONTENT region of the frame — see updateCrop.
   function frameSource() {
     const v = scan.source || scanEls.video;
-    return { el: v, w: v.videoWidth || v.width || 0, h: v.videoHeight || v.height || 0 };
+    const vw = v.videoWidth || v.width || 0, vh = v.videoHeight || v.height || 0;
+    const c = scan.crop && scan.crop.key === vw + 'x' + vh ? scan.crop : null;
+    return c ? { el: v, w: c.w, h: c.h, sx: c.sx, sy: c.sy }
+      : { el: v, w: vw, h: vh, sx: 0, sy: 0 };
+  }
+  // Some iOS Safari builds hand over camera frames whose buffer does NOT
+  // match the content: the sensor image sits letterboxed inside dead-black
+  // bars, on the <video> element AND in what drawImage samples — the same
+  // WebKit rotation-bug family that broke the on-screen preview. Everything
+  // downstream assumes the frame IS the content, so find the black bars and
+  // crop to the live content region. Camera bars are digitally black (zero
+  // noise), while even a dark real scene carries sensor noise above the
+  // threshold, so a healthy frame resolves to the full buffer. Re-probed
+  // every couple of seconds to follow rotation.
+  function updateCrop(el, vw, vh) {
+    const key = vw + 'x' + vh;
+    if (scan.crop && scan.crop.key === key && ++scan.crop.age < 60) return;
+    const pc = scan.cropCanvas || (scan.cropCanvas = document.createElement('canvas'));
+    const pw = 180, ph = Math.max(1, Math.round(vh * (pw / vw)));
+    if (pc.width !== pw || pc.height !== ph) { pc.width = pw; pc.height = ph; }
+    const pctx = pc.getContext('2d', { willReadFrequently: true });
+    pctx.drawImage(el, 0, 0, pw, ph);
+    const d = pctx.getImageData(0, 0, pw, ph).data;
+    let x0 = pw, x1 = -1, y0 = ph, y1 = -1;
+    for (let y = 0; y < ph; y++) {
+      for (let x = 0; x < pw; x++) {
+        const o = (y * pw + x) * 4;
+        if (Math.max(d[o], d[o + 1], d[o + 2]) >= 12) {
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+      }
+    }
+    const full = { key, age: 0, sx: 0, sy: 0, w: vw, h: vh };
+    // nothing lit (a dark room) or almost everything lit (a healthy frame —
+    // don't nibble at vignetted corners): use the whole buffer
+    if (x1 < 0 || (x1 - x0 + 1) * (y1 - y0 + 1) < pw * ph * 0.2
+        || (x1 - x0 + 1 >= pw * 0.96 && y1 - y0 + 1 >= ph * 0.96)) {
+      scan.crop = full;
+      return;
+    }
+    const k = vw / pw;
+    const sx = Math.max(0, Math.floor(x0 * k)), sy = Math.max(0, Math.floor(y0 * k));
+    scan.crop = { key, age: 0, sx, sy,
+      w: Math.min(vw - sx, Math.ceil((x1 - x0 + 1) * k)),
+      h: Math.min(vh - sy, Math.ceil((y1 - y0 + 1) * k)) };
   }
   function videoMapping(f) {
     const { w, h } = frameSource();
@@ -1771,17 +1819,20 @@
     const side = Math.min(W, H) * 0.68;
     return { x: (W - side) / 2, y: (H - side) / 2 - H * 0.05, size: side, angle: 0 };
   }
-  // copy the current video frame into the sample canvas (≤ 720 px wide)
+  // copy the current frame's CONTENT region into the sample canvas (≤ 720 px wide)
   function grabFrame() {
-    const { el, w, h: vh } = frameSource();
-    if (!w || !vh) return null;
+    const v = scan.source || scanEls.video;
+    const vw = v.videoWidth || v.width || 0, vh0 = v.videoHeight || v.height || 0;
+    if (!vw || !vh0) return null;
+    updateCrop(v, vw, vh0);
+    const { el, w, h: vh, sx, sy } = frameSource();
     const sc = scan.sampleCanvas;
     const targetW = Math.min(w, 720);
     const f = targetW / w;
     const h = Math.round(vh * f);
     if (sc.width !== targetW || sc.height !== h) { sc.width = targetW; sc.height = h; }
     const sctx = sc.getContext('2d', { willReadFrequently: true });
-    sctx.drawImage(el, 0, 0, sc.width, sc.height);
+    sctx.drawImage(el, sx, sy, w, vh, 0, 0, sc.width, sc.height);
     return { px: sctx.getImageData(0, 0, sc.width, sc.height), f };
   }
 
@@ -1914,7 +1965,8 @@
       const dw = src.w * scale, dh = src.h * scale;
       ctx.save();
       if (scan.mirror) { ctx.translate(innerWidth, 0); ctx.scale(-1, 1); }
-      ctx.drawImage(src.el, (innerWidth - dw) / 2, (innerHeight - dh) / 2, dw, dh);
+      ctx.drawImage(src.el, src.sx, src.sy, src.w, src.h,
+        (innerWidth - dw) / 2, (innerHeight - dh) / 2, dw, dh);
       ctx.restore();
     }
     const n = SCAN.gridN(scan.scanMode);
