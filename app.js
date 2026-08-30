@@ -1662,9 +1662,7 @@
     scan.mirror = saved !== null ? saved === '1' : facing !== 'environment';
     scan.live = true;
     scan.startedAt = performance.now();
-    scan.videoLayout = '';
     scanEls.video.style.display = '';
-    layoutVideo();
     scanEls.manual.style.display = '';
     scanEls.mirror.style.display = '';
     // flashlight, where the camera supports it (mostly phone back cameras)
@@ -1721,8 +1719,6 @@
     cancelAnimationFrame(scan.raf);
     if (scan.stream) { for (const t of scan.stream.getTracks()) t.stop(); scan.stream = null; }
     scanEls.video.srcObject = null;
-    scan.videoLayout = '';
-    scanEls.video.removeAttribute('style');   // back to the CSS fallback box
     scan.live = false;
     scan.source = null;
     scan.photo.px = null;   // release the cached photo pixels
@@ -1755,31 +1751,6 @@
       offX: (w * scale - innerWidth) / 2,
       offY: (h * scale - innerHeight) / 2,
     };
-  }
-  // iOS Safari sometimes renders a camera stream letterboxed inside the
-  // element instead of honouring object-fit: cover (WebKit's long-standing
-  // object-fit-on-live-video bugs, worst around the rotated first frames),
-  // leaving the preview as a small strip in the middle of the screen. So the
-  // element never gets to rely on object-fit: its box is sized here with the
-  // exact cover math videoMapping uses — the box's aspect equals the frame's,
-  // every object-fit value renders identically, and the preview always sits
-  // precisely where the sampling geometry assumes it does. Re-checked every
-  // frame (cheap once cached) so rotation and late metadata are caught.
-  function layoutVideo() {
-    if (!scan.stream) return;   // synthetic sources drive a hidden video
-    const { w, h } = frameSource();
-    if (!w || !h) return;
-    const scale = Math.max(innerWidth / w, innerHeight / h);
-    const key = w + 'x' + h + '@' + innerWidth + 'x' + innerHeight;
-    if (scan.videoLayout === key) return;
-    scan.videoLayout = key;
-    const st = scanEls.video.style;
-    st.width = w * scale + 'px';
-    st.height = h * scale + 'px';
-    st.left = (innerWidth - w * scale) / 2 + 'px';
-    st.top = (innerHeight - h * scale) / 2 + 'px';
-    st.right = 'auto';
-    st.bottom = 'auto';
   }
   function sampleToScreen(r, f) {
     const { k, offX, offY } = videoMapping(f);
@@ -1907,7 +1878,7 @@
     ctx.save();
     ctx.font = '600 13px system-ui, -apple-system, sans-serif';
     const w = ctx.measureText(text).width + 24;
-    const px = Math.max(8, Math.min(ctx.canvas.width - w - 8, x - w / 2));
+    const px = Math.max(8, Math.min(innerWidth - w - 8, x - w / 2));
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
     ctx.beginPath();
     ctx.roundRect(px, y - 13, w, 26, 13);
@@ -1926,11 +1897,29 @@
   }
   // one frame of the live scanner: sample, track, gate, draw, maybe capture
   function scanFrame() {
-    layoutVideo();
     const draw = scanEls.draw;
-    if (draw.width !== innerWidth || draw.height !== innerHeight) { draw.width = innerWidth; draw.height = innerHeight; }
+    // the canvas is the preview: Safari's <video> rendering has repeatedly
+    // shipped broken object-fit for camera streams (the frame renders as a
+    // letterboxed strip), so the frame the detector actually samples is
+    // painted here with our own cover math and the video element is never
+    // trusted to display anything. Backed at devicePixelRatio (capped ×2)
+    // so the preview stays crisp; every coordinate below is CSS px.
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    const bw = Math.round(innerWidth * dpr), bh = Math.round(innerHeight * dpr);
+    if (draw.width !== bw || draw.height !== bh) { draw.width = bw; draw.height = bh; }
     const ctx = draw.getContext('2d');
-    ctx.clearRect(0, 0, draw.width, draw.height);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, bw, bh);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const src = frameSource();
+    if (src.w && src.h) {
+      const scale = Math.max(innerWidth / src.w, innerHeight / src.h);
+      const dw = src.w * scale, dh = src.h * scale;
+      ctx.save();
+      if (scan.mirror) { ctx.translate(innerWidth, 0); ctx.scale(-1, 1); }
+      ctx.drawImage(src.el, (innerWidth - dw) / 2, (innerHeight - dh) / 2, dw, dh);
+      ctx.restore();
+    }
     const n = SCAN.gridN(scan.scanMode);
     const now = performance.now();
     const fr = grabFrame();
@@ -2067,7 +2056,7 @@
       const s = dim.size, gcx = dim.x + s / 2, gcy = dim.y + s / 2;
       ctx.save();
       ctx.beginPath();
-      ctx.rect(0, 0, draw.width, draw.height);
+      ctx.rect(0, 0, innerWidth, innerHeight);
       ctx.translate(gcx, gcy);
       ctx.rotate(dim.angle || 0);
       ctx.rect(-s / 2, -s / 2, s, s);
@@ -2102,7 +2091,7 @@
         const b = (x) => (x ? '✓' : '✗');
         drawPill(ctx,
           `lock${b(tracked)} q${Math.round(scan.quality * 100)} s${Math.round(rect.strength)} known${b(allKnown)} calm${b(calm)} ctr${b(centerOK)} dup${dup ? '!' : '·'} ${scan.stable}f/${Math.round(now - scan.stableSince)}ms`,
-          gcx, Math.min(draw.height - 118, gcy + s * 0.72 + 34));
+          gcx, Math.min(innerHeight - 118, gcy + s * 0.72 + 34));
       }
       if (held && now >= scan.cooldownUntil) {
         const k = scan.acc.n;
