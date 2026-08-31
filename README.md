@@ -22,7 +22,7 @@ good at execution, not invention.
 - **Camera scanning** — roughly fill the on-screen guide square with each face and the scanner locks on automatically: position, size and tilt. The acquisition window is deliberately tight, which is what keeps busy backgrounds from stealing the lock. Works with stickered cubes and with gapless stickerless cubes, which have no seams — there it reads the corner notches where tiles meet. Auto-capture waits for a confident read; manual capture and undo are always available.
 - **Four puzzles** — 3×3, 4×4, 2×2 and Mirror 2×2.
 - **Two solving styles** — *Step-by-step* teaches the classic layer-by-layer method in stages, each with a "Why this works" explainer of the underlying idea (commutators, twist parity, 4×4 parities); *Fewest moves* looks for short solutions (two-phase for 3×3; the 4×4 reduces phase-by-phase and finishes with IDA\* over TPR-style pruning tables).
-- **4×4 solving without a server** — the shipped lookup tables are 228 KB gzipped. The large pruning table for the exact search is too big to ship, so each Web Worker builds its own copy on device; that build is started when you open the 4×4 tab, so it is usually done before you ask for a solve, and it never blocks one. Typical result: around 46 moves in about a second, a couple fewer with "Search harder".
+- **4×4 solving without a server** — the shipped lookup tables are 228 KB gzipped. The large pruning table for the exact search is too big to ship, so each Web Worker builds its own copy on device; that build is started when you open the 4×4 tab, so it is usually done before you ask for a solve, and it never blocks one. Typical result: around 46 moves in about a second; when the first answer looks improvable, a deeper background search shaves a couple more off by itself.
 - **3D playback** — animated cube with play/pause, stepping, speed control, and per-stage move lists. Your cube and playback position survive refreshes.
 - **2D net view** — a flat unfolded cross as an alternative to the 3D cube while painting; some people find it easier to copy a real cube face-by-face.
 - **Pretty patterns** — checkerboard, cube-in-cube, superflip and friends, animated from a solved cube with the moves shown so you can follow along. Each algorithm is checked against the engine before it is offered. (Doing that turned up one thing worth knowing: a true checkerboard is impossible on the 2×2 and the 4×4.)
@@ -65,7 +65,7 @@ node tests/scan-harness.mjs --seed 1     # scanner: lock rate / bad fits / false
 node tests/scan-harness.mjs --corpus     # scanner: the same, on rectified photos of real cubes
 node tests/hueclass-field.mjs            # colour classifier vs field-measured phone-camera pixels
 node tests/solve4-harness.mjs            # 4×4 solver: move count + wall time
-node tests/solve4-harness.mjs --hard     # the "Search harder" deep mode
+node tests/solve4-harness.mjs --hard     # the deep mode the app runs in the background
 node tests/browser-worker-test.mjs       # the real-browser worker path (needs playwright)
 ```
 
