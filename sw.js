@@ -5,9 +5,10 @@
 // Service worker: makes the app installable and usable offline.
 // Strategy: network-first with cache fallback for every same-origin GET, so
 // deploys are picked up immediately and the cache only serves when the
-// network can't. The core files are pre-cached on install so the app works
-// offline even for pages never revisited.
-const CACHE = 'cube-solver-v3'; // bump on every release so offline clients refresh
+// network can't. The core files — including the vendored font — are
+// pre-cached on install so the app works offline even for pages never
+// revisited. Nothing off-origin is ever requested or cached.
+const CACHE = 'cube-solver-v4'; // bump on every release so offline clients refresh
 const CORE = [
   './',
   'index.html',
@@ -20,6 +21,7 @@ const CORE = [
   'tables.js',
   'worker4.js',
   'tables/tpr4-v1.bin.gz',
+  'fonts/inter-v20-latin.woff2',
   'manifest.webmanifest',
   'icons/icon.svg',
   'icons/icon-32.png',
@@ -43,19 +45,8 @@ self.addEventListener('activate', (/** @type {ExtendableEvent} */ e) => {
 self.addEventListener('fetch', (/** @type {FetchEvent} */ e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET') return;
-  // web fonts are immutable — cache-first keeps typography working offline
-  if (url.origin === 'https://fonts.googleapis.com' || url.origin === 'https://fonts.gstatic.com') {
-    e.respondWith(
-      caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
-        if (res.ok) {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(e.request, copy));
-        }
-        return res;
-      })).catch(() => Response.error())
-    );
-    return;
-  }
+  // the font is same-origin and precached now, so there is no cross-origin
+  // branch left: anything not from this origin is none of our business
   if (url.origin !== location.origin) return;
   e.respondWith(
     fetch(e.request)

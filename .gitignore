@@ -1,6 +1,4 @@
 node_modules/
-package.json
-package-lock.json
 shots-*/
 
 # Corpus working files (tools/cube-corpus). Regenerable, large, or licence-

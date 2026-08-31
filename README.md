@@ -27,7 +27,7 @@ good at execution, not invention.
 - **2D net view** — a flat unfolded cross as an alternative to the 3D cube while painting; some people find it easier to copy a real cube face-by-face.
 - **Pretty patterns** — checkerboard, cube-in-cube, superflip and friends, animated from a solved cube with the moves shown so you can follow along. Each algorithm is checked against the engine before it is offered. (Doing that turned up one thing worth knowing: a true checkerboard is impossible on the 2×2 and the 4×4.)
 - **Share & copy** — share a link that reproduces your exact cube on any device; copy a solution's move sequence with one tap.
-- **No build, no backend** — plain HTML/CSS/JS served statically. Clone it and open `index.html`.
+- **No build, no backend, nothing third-party** — plain HTML/CSS/JS served statically, with the one webfont vendored alongside it. The page never talks to another origin. Clone it and open `index.html`.
 
 ## Privacy
 
@@ -47,9 +47,12 @@ much to say — but the app asks for your camera, so it should say it plainly:
 - **Share links** carry the cube in the URL *fragment* (`#c=…`), which browsers
   never send to a server, and the app drops it from the address bar as soon as it
   has loaded.
-- **One third-party request:** the Inter webfont comes from Google Fonts, so
-  Google sees your IP and user agent on a first visit (the service worker caches
-  it afterwards). That is the only off-origin request the page makes.
+- **The page makes no off-origin request at all.** Every byte — including the
+  Inter webfont, which used to come from Google Fonts — is served from the same
+  origin as the app, so no third party ever sees your IP or user agent. A
+  Content-Security-Policy pins that shut: scripts may only load from this origin,
+  and `connect-src 'self'` means there is nowhere for injected code to send
+  anything even if some ever got in.
 
 ## Run locally
 
@@ -64,11 +67,21 @@ Opening `index.html` directly from `file://` also works (the 4×4 falls back to 
 
 ## Development
 
-Everything is plain scripts — no bundler, no dependencies. Types are checked
-without a build step: the shipped files carry JSDoc annotations, cross-file
-globals are declared in `types.d.ts`, and `npx tsc --noEmit` (config in
-`jsconfig.json`) must come back clean — nothing is compiled and nothing ships
-differently. The interesting parts:
+Everything is plain scripts — no bundler, and nothing the browser downloads
+comes from a package. `package.json` exists only for the two dev tools
+(TypeScript for the type check, Playwright for the browser test); it is
+`private`, its lockfile is committed so the toolchain is reproducible, and none
+of it is shipped or bundled:
+
+```sh
+npm install     # dev tooling only — the app needs none of it
+npm test        # typecheck + CSP check + colour, assignment, scanner and 4x4 harnesses
+```
+
+Types are checked without a build step: the shipped files carry JSDoc
+annotations, cross-file globals are declared in `types.d.ts`, and
+`npm run typecheck` (config in `jsconfig.json`) must come back clean — nothing
+is compiled and nothing ships differently. The interesting parts:
 
 | File | What it is |
 |---|---|
@@ -77,10 +90,12 @@ differently. The interesting parts:
 | `cube4.js`, `tpr4.js`, `worker4.js` | 4×4 engine and phased-reduction solver: beam-portfolio fast path plus a deep engine (exact phase 3 by IDA\* over an edge-pairing permutation table, parity solved structurally) racing colour-axis rotations across workers |
 | `tables/` | Pre-built solver tables (nibble-packed, gzipped); regenerate with `tools/gen-tables.mjs` |
 | `app.js` | UI: painting, 3D rendering, playback, persistence, scanner overlay |
+| `fonts/` | The vendored Inter subset and its OFL notice — the only third-party asset in the app |
 | `tools/cube-corpus/` | Pipeline that turns openly-licensed cube photos into labelled scanner test scenes — real logos, gloss and worn stickers, which the synthetic harness cannot draw |
 
 Both core pipelines have measurement harnesses with pass/fail targets, which is
-where the real numbers live — quote those rather than anything in this file:
+where the real numbers live — quote those rather than anything in this file.
+`npm test` runs the quick ones; individually:
 
 ```sh
 node tests/scan-harness.mjs --seed 1     # scanner: lock rate / bad fits / false locks on synthetic scenes
@@ -89,6 +104,7 @@ node tests/hueclass-field.mjs            # colour classifier vs field-measured p
 node tests/solve4-harness.mjs            # 4×4 solver: move count + wall time
 node tests/solve4-harness.mjs --hard     # the "Search harder" deep mode
 node tests/browser-worker-test.mjs       # the real-browser worker path (needs playwright)
+node tests/csp-hash-check.mjs            # CSP still pins the inline scripts; nothing off-origin crept back
 ```
 
 `--corpus` needs a corpus first; see [`tools/cube-corpus/`](tools/cube-corpus/README.md),
@@ -138,8 +154,8 @@ Copyright covers the expression of a program rather than the algorithm it implem
 
 ### Assets and tooling
 
-- **[Inter](https://rsms.me/inter/)** by Rasmus Andersson, under the [SIL Open Font License 1.1](https://openfontlicense.org/) — loaded from Google Fonts at runtime, not redistributed here.
-- **[Playwright](https://playwright.dev/)** (Apache-2.0) — an optional dev dependency for `tests/browser-worker-test.mjs` only; installed ad hoc (`npm install playwright --no-save`), never bundled. The app itself ships no bundled dependencies.
+- **[Inter](https://rsms.me/inter/)** by Rasmus Andersson, under the [SIL Open Font License 1.1](https://openfontlicense.org/) — vendored in `fonts/` (latin subset, variable weight) rather than fetched from Google Fonts, so the app makes no off-origin request. The OFL requires its notice to travel with the font: it is in [`fonts/LICENSE-Inter.txt`](fonts/LICENSE-Inter.txt), and it covers the font only — the rest of CubeSnap stays GPL-3.0-or-later. See [`fonts/README.md`](fonts/README.md) for provenance and how to update it.
+- **[Playwright](https://playwright.dev/)** (Apache-2.0) — an optional dev dependency for `tests/browser-worker-test.mjs` only; installed ad hoc (`npm install playwright --no-save`), never bundled. The app ships no third-party *code* at all: the font is the only vendored asset.
 
 ## License
 

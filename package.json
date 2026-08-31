@@ -1,0 +1,23 @@
+{
+  "name": "cube-solver",
+  "version": "0.0.0",
+  "private": true,
+  "description": "CubeSnap \u2014 dev tooling only. The app itself has no runtime dependencies: index.html loads plain scripts and nothing is bundled or compiled.",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p jsconfig.json",
+    "test:csp": "node tests/csp-hash-check.mjs",
+    "test:colour": "node tests/hueclass-field.mjs",
+    "test:assign": "node tests/assign-harness.mjs",
+    "test:scan": "node tests/scan-harness.mjs --seed 1",
+    "test:scan:corpus": "node tests/scan-harness.mjs --corpus",
+    "test:solve4": "node tests/solve4-harness.mjs",
+    "test:solve4:hard": "node tests/solve4-harness.mjs --hard",
+    "test:browser": "node tests/browser-worker-test.mjs",
+    "test": "npm run typecheck && npm run test:csp && npm run test:colour && npm run test:assign && npm run test:scan && npm run test:solve4"
+  },
+  "devDependencies": {
+    "playwright": "^1.55.1",
+    "typescript": "^5.6.3"
+  }
+}
