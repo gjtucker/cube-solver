@@ -260,10 +260,18 @@
   #scanVideo.mirror { transform: scaleX(-1); }
   #scanMirror.active { background: rgba(61,220,132,0.35); box-shadow: 0 0 0 2px rgba(61,220,132,0.7) inset; }
   #scanDraw { position: absolute; inset: 0; width: 100%; height: 100%; }
+  /* The close button lives here, so this bar sits above everything else in the
+     overlay (the photo stage at 5, the camera-unavailable card at 6). It used
+     to be at 3, which left both of those covering the X: with no live camera
+     you could only leave via the card's own two buttons, and while a photo was
+     staged the X did nothing. The bar itself is transparent and must not
+     swallow clicks meant for what is underneath, so only its children take
+     pointer events. */
   .scanTop {
     position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center;
-    padding: 12px; gap: 10px; z-index: 3;
+    padding: 12px; gap: 10px; z-index: 7; pointer-events: none;
   }
+  .scanTop > * { pointer-events: auto; }
   .scanProgress { display: flex; gap: 6px; flex: 1; }
   .scanProgress .pip {
     width: 30px; height: 30px; border-radius: 9px; border: 2px solid rgba(255,255,255,0.35);
