@@ -927,7 +927,7 @@
     },
     fast: {
       '3': 'A two-phase computer method: around 20–25 moves, one straight run with no stages to learn. First use takes a few seconds to warm up.',
-      '4': 'Phased reduction finished by an exact table-driven search — typically around 46 moves in about a second (the tables warm up in the background when you open this tab). "Search harder" trades ~15 s for a couple more moves off.',
+      '4': 'Phased reduction finished by an exact table-driven search — typically around 46 moves in about a second (the tables warm up in the background when you open this tab). When a deeper search looks worthwhile, it runs by itself and quietly shortens the answer.',
       '2': 'The mathematically shortest solution — never more than 11 turns. First use takes a moment to warm up.',
       'm': 'The mathematically shortest way back to a perfect cube — never more than 11 turns. First use takes a moment to warm up.',
     },
@@ -1160,42 +1160,43 @@
     solution = res;
     moveIndex = 0;
     enterPlayback();
-    updateHarderButton();
+    maybeRefineDeep();
   });
 
-  // 4×4 fast solutions can be refined by a deeper (~10-20 s) search
-  function updateHarderButton() {
-    btnHarder.style.display = mode === '4' && method === 'fast' && typeof Worker !== 'undefined' ? '' : 'none';
-  }
-
-  const btnHarder = /** @type {HTMLButtonElement} */ (document.getElementById('btnHarder'));
-  btnHarder.addEventListener('click', async () => {
-    if (!solution || !baseState) return;
-    await waitIdle();
-    const st = baseState.slice();
+  // One Solve button: the fast 4×4 result appears immediately, and the deep
+  // (~10 s) search runs BY ITSELF in the background when it is likely to pay.
+  // The fast solution's own length is the tell (measured, 40 scrambles): at
+  // 43-44 moves the deep search almost never shortens anything (avg gain
+  // 0.0-0.3), while 45+ shortens by 1.25 on average, rising to a guaranteed
+  // 2-4 at 48. A shorter solution only ever swaps in while playback still
+  // sits untouched at move 0 — never under the user's feet.
+  const REFINE_AT = 45;
+  let refineToken = 0;
+  async function maybeRefineDeep() {
+    if (mode !== '4' || method !== 'fast' || typeof Worker === 'undefined') return;
+    if (!solution || !baseState || solution.moves.length < REFINE_AT) return;
     const cur = solution;
     const before = cur.moves.length;
-    btnHarder.disabled = true;
+    const tok = ++refineToken;
+    // messages must not stomp the msg area once the user starts following
+    const untouched = () => solution === cur && tok === refineToken && moveIndex === 0 && !playing;
     try {
-      const res = await solver4.solveHard(st, (done, total) => {
-        showMsg(`Searching much harder — ${Math.round((100 * done) / total)}% (best so far stays at ${before} moves until this finishes)…`, 'ok');
+      const res = await solver4.solveHard(baseState.slice(), (done, total) => {
+        if (untouched()) {
+          showMsg(`Short solution found: just ${before} moves! Follow along below — still checking for a shorter one (${Math.round((100 * done) / total)}%)…`, 'ok');
+        }
       });
-      if (solution !== cur) {
-        showMsg('The cube changed while searching — deeper result discarded.', 'ok');
-      } else if (res && !res.error && res.moves && res.moves.length < before) {
+      if (!untouched()) return;
+      if (res && !res.error && res.moves && res.moves.length < before) {
         solution = res;
         moveIndex = 0;
         enterPlayback();
-        showMsg(`Found a shorter solution: ${res.moves.length} moves (was ${before}). Playback reset to the start.`, 'ok');
+        showMsg(`Shortened it: ${res.moves.length} moves (the first pass found ${before}). Follow along below.`, 'ok');
       } else {
-        showMsg(`No shorter solution found — keeping the ${before}-move one.`, 'ok');
+        showMsg(`Short solution found: just ${before} moves! Follow along below.`, 'ok');
       }
-    } catch (_) {
-      showMsg(`The deeper search didn’t finish — keeping the ${before}-move solution.`, 'err');
-    } finally {
-      btnHarder.disabled = false;
-    }
-  });
+    } catch (_) { /* background refinement failing is not an event — the fast solution stands */ }
+  }
 
   function fixMsg(err) {
     if (err.startsWith('needs exactly')) return 'Color count is off: each color needs exactly 9 stickers. ' + err;
@@ -1245,7 +1246,6 @@
     mirrorGeo = false;
     solutionEl.style.display = 'none';
     btnEdit.style.display = 'none';
-    document.getElementById('btnHarder').style.display = 'none';
     btnSolve.style.display = '';
     paintCard.style.opacity = '';
     paintCard.style.pointerEvents = '';
@@ -1469,7 +1469,6 @@
         render();
       }
       showMsg(`Welcome back — resumed at move ${moveIndex} of ${solution.moves.length}.`, 'ok');
-      updateHarderButton();
     } catch (_) {
       exitPlayback();
       render();

@@ -267,6 +267,7 @@ for (let i = 0; i < N; i++) {
   // OBTM (outer block turn metric): outer moves count 1, single-slice moves 2
   const obtm = sol.moves.reduce((acc, m) => acc + (m[0] === m[0].toUpperCase() ? 1 : 2), 0);
   rows.push({ total: sol.moves.length, obtm, red: redLen, three: redLen === null ? null : sol.moves.length - redLen, ms });
+  if (args.includes('--rows')) console.log(`row ${i}: total=${sol.moves.length} ms=${ms}`);
 }
 
 const nums = (k) => rows.map((r) => r[k]).filter((x) => x !== null).sort((a, b) => a - b);
