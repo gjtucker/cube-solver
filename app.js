@@ -6,6 +6,12 @@
   const C = window.Cube;
   /** @param {string} sel @returns {NodeListOf<HTMLElement>} */
   const $$ = (sel) => document.querySelectorAll(sel);
+  // Show/hide for elements whose hidden state lives in the .hide class rather
+  // than a style="" attribute (the CSP forbids those). Toggling the class is
+  // the only thing that may control these elements' display — writing
+  // el.style.display would lose to .hide's !important and silently do nothing.
+  /** @param {HTMLElement} el @param {boolean} shown */
+  const setShown = (el, shown) => el.classList.toggle('hide', !shown);
   const C4 = window.Cube4;
   // ---- 4×4 fast solver: shipped tables + parallel search workers ----
   // The table bundle is fetched once in the background (skipping the ~10s
@@ -256,7 +262,7 @@
     'm': { paint: C.stateToShapes(C.solvedState()) }, // shape codes
   };
   const HOWTO = {
-    '3': 'Hold your cube with the <b>yellow center up</b> <span class="dot" style="background:var(--c-U)"></span> and the <b>green center facing you</b> <span class="dot" style="background:var(--c-F)"></span>, then tap a color and paint every sticker to match. Centers are fixed.',
+    '3': 'Hold your cube with the <b>yellow center up</b> <span class="dot dot-U"></span> and the <b>green center facing you</b> <span class="dot dot-F"></span>, then tap a color and paint every sticker to match. Centers are fixed.',
     '4': 'Hold your 4×4 <b>any way you like</b> and paint all 96 stickers to match — on a 4×4 even the centers move, so the solver works out your color scheme itself.',
     '2': 'Hold your 2×2 <b>any way you like</b> and paint all 24 stickers to match — the solver figures out your color scheme automatically.',
     'm': 'Ignore color — a mirror cube is about <b>size</b>. For every sticker, pick the shape that matches the block you see: <b>small</b>, <b>wide</b>, <b>tall</b> or <b>big</b>. Hold your cube any way you like.',
@@ -540,7 +546,7 @@
     }
   }
   function renderNet() {
-    if (mode === 'm' || netEl.style.display === 'none') return;
+    if (mode === 'm' || netEl.classList.contains('hide')) return;
     const st = pbState || data[mode].paint;
     for (const idx in netCells) {
       const cell = netCells[idx];
@@ -553,9 +559,9 @@
   // without forgetting the user's preference
   function syncView() {
     const v = (mode === 'm' || solution) ? '3d' : viewMode;
-    viewport.style.display = v === 'net' ? 'none' : '';
-    netEl.style.display = v === 'net' ? '' : 'none';
-    viewSeg.style.display = (mode === 'm' || solution) ? 'none' : '';
+    setShown(viewport, v !== 'net');
+    setShown(netEl, v === 'net');
+    setShown(viewSeg, !(mode === 'm' || solution));
     view3dBtn.classList.toggle('on', v === '3d');
     viewNetBtn.classList.toggle('on', v === 'net');
     hint3d.textContent = v === 'net' ? 'tap a square to paint it' : HINT[mode];
@@ -1165,7 +1171,7 @@
 
   // 4×4 fast solutions can be refined by a deeper (~10-20 s) search
   function updateHarderButton() {
-    btnHarder.style.display = mode === '4' && method === 'fast' && typeof Worker !== 'undefined' ? '' : 'none';
+    setShown(btnHarder, mode === '4' && method === 'fast' && typeof Worker !== 'undefined');
   }
 
   const btnHarder = /** @type {HTMLButtonElement} */ (document.getElementById('btnHarder'));
@@ -1219,7 +1225,7 @@
 
   function enterPlayback() {
     solutionEl.style.display = 'block';
-    btnEdit.style.display = '';
+    setShown(btnEdit, true);
     btnSolve.style.display = 'none';
     paintCard.style.opacity = '0.45';
     paintCard.style.pointerEvents = 'none';
@@ -1244,8 +1250,8 @@
     pbState = null;
     mirrorGeo = false;
     solutionEl.style.display = 'none';
-    btnEdit.style.display = 'none';
-    document.getElementById('btnHarder').style.display = 'none';
+    setShown(btnEdit, false);
+    setShown(btnHarder, false);
     btnSolve.style.display = '';
     paintCard.style.opacity = '';
     paintCard.style.pointerEvents = '';
@@ -1635,6 +1641,7 @@
     scanEls.overlay.classList.add('on');
     scanEls.photoStage.style.display = 'none';
     scanEls.choice.style.display = 'none';
+    scanEls.torch.style.display = 'none';   // shown only once a torch-capable track is live
     updateScanUI();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({

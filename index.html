@@ -11,15 +11,18 @@
      nowhere to exfiltrate to (connect-src 'self'), no <base> or <object>
      injection. The two sha256 hashes cover the JSON-LD block and the inline
      theme script below.
-     'unsafe-inline' stays in style-src ONLY because the markup carries a few
-     style="" attributes; script-src, the one that matters, has no such escape.
+     Neither script-src nor style-src has an inline escape: the markup carries
+     no style="" attributes at all (initial layout and hidden state live in
+     style.css; app.js toggles the .hide class rather than writing
+     el.style.display). CSSOM writes — el.style.foo = … from script — are not
+     governed by style-src, so the 3D rendering is unaffected.
      frame-ancestors is deliberately absent: it is ignored in a <meta> policy
      and would only log a warning. GitHub Pages cannot set response headers,
      so a meta policy is the strongest option available here.
      IMPORTANT: editing either inline script changes its hash and will silently
      block it. tests/csp-hash-check.mjs guards against that — run it after any
      index.html edit. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; script-src 'self' 'sha256-TVXX/9se2xbG166sNryLXbhS81higuMzW23rMgETAc8=' 'sha256-Ok+JmlSZ59XuQ/IJa6JK1MfHamNz6a50hSMVo/mucIE='; style-src 'self' 'unsafe-inline'; img-src 'self' blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; script-src 'self' 'sha256-TVXX/9se2xbG166sNryLXbhS81higuMzW23rMgETAc8=' 'sha256-Ok+JmlSZ59XuQ/IJa6JK1MfHamNz6a50hSMVo/mucIE='; style-src 'self'; img-src 'self' blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'">
 <meta name="referrer" content="no-referrer">
 <title>CubeSnap — Rubik's Cube Solver: scan your cube, follow the 3D solution</title>
 <meta name="description" content="CubeSnap is a free Rubik's cube solver: scan your cube with the camera (stickered or stickerless) and follow a step-by-step 3D solution. Solves 3×3, 4×4, 2×2 and Mirror cubes — no ads, no app, no sign-up.">
@@ -106,7 +109,7 @@
         <button id="viewNetBtn" title="Flat unfolded view — some find it easier to copy a real cube">Net</button>
       </div>
       <div class="viewport" id="viewport"><div class="cube" id="cube"></div></div>
-      <div class="netview" id="netview" style="display:none"></div>
+      <div class="netview hide" id="netview"></div>
       <div class="hint3d" id="hint3d">drag to spin · tap a sticker to paint</div>
     </div>
 
@@ -115,7 +118,7 @@
         <h2 id="paintTitle">1 · Paint your cube</h2>
         <p class="howto" id="howto"></p>
         <div class="palette" id="palette"></div>
-        <div class="btnrow" style="margin-top:12px">
+        <div class="btnrow gap-above">
           <button class="btn primary" id="btnScan">📷 Scan with camera</button>
           <button class="btn" id="btnReset">Solved cube</button>
           <button class="btn" id="btnClear">Clear</button>
@@ -131,12 +134,12 @@
           <button class="segbtn" data-method="fast">⚡ Fewest moves</button>
         </div>
         <p class="methodnote" id="methodNote"></p>
-        <div class="btnrow" style="align-items:center">
+        <div class="btnrow middle">
           <button class="btn primary" id="btnSolve">✨ Solve my cube</button>
-          <button class="btn ghost" id="btnEdit" style="display:none">✏️ Edit cube</button>
-          <button class="btn ghost" id="btnHarder" style="display:none">🔍 Search harder (~15 s)</button>
+          <button class="btn ghost hide" id="btnEdit">✏️ Edit cube</button>
+          <button class="btn ghost hide" id="btnHarder">🔍 Search harder (~15 s)</button>
         </div>
-        <div class="msg" id="msg" style="margin-top:10px"></div>
+        <div class="msg" id="msg"></div>
       </div>
 
       <div class="card" id="patternsCard">
@@ -193,7 +196,7 @@
   <canvas id="scanDraw"></canvas>
   <div class="scanTop">
     <div class="scanProgress" id="scanProgress"></div>
-    <button class="scanClose" id="scanTorch" title="Flashlight" aria-label="Flashlight" style="display:none">🔦</button>
+    <button class="scanClose" id="scanTorch" title="Flashlight" aria-label="Flashlight">🔦</button>
     <button class="scanClose" id="scanMirror" title="Mirror the preview" aria-label="Mirror the preview">⇄</button>
     <button class="scanClose" id="scanClose" aria-label="Close the scanner">✕</button>
   </div>
@@ -201,9 +204,9 @@
     <div class="scanStatus" id="scanStatus"></div>
     <div class="scanTitle" id="scanTitle"></div>
     <div class="scanHint" id="scanHint"></div>
-    <div class="btnrow" style="justify-content:center">
+    <div class="btnrow centered">
       <button class="btn" id="scanManual">📸 Capture now</button>
-      <button class="btn ghost" id="scanUndo" style="display:none">↺ Undo last face</button>
+      <button class="btn ghost" id="scanUndo">↺ Undo last face</button>
       <button class="btn ghost" id="scanUsePhoto">Use photo mode</button>
     </div>
   </div>
@@ -211,7 +214,7 @@
     <div class="scanChoiceCard">
       <div class="scanChoiceTitle">Live camera can't start here</div>
       <div class="scanChoiceMsg" id="scanChoiceMsg"></div>
-      <a class="btn primary" id="scanOpenFull" target="_blank" rel="noopener" style="display:none">↗ Open full screen &amp; scan live</a>
+      <a class="btn primary" id="scanOpenFull" target="_blank" rel="noopener">↗ Open full screen &amp; scan live</a>
       <button class="btn primary" id="scanRetryCam">🎥 Try live camera again</button>
       <button class="btn" id="scanChoicePhoto">📸 Scan with photos instead</button>
     </div>
@@ -224,13 +227,13 @@
         <label>↔ size <input type="range" id="photoSize" min="10" max="95" value="60" aria-label="Grid size"></label>
         <label>↻ tilt <input type="range" id="photoAngle" min="-45" max="45" value="0" aria-label="Grid tilt"></label>
       </div>
-      <div class="btnrow" style="justify-content:center">
+      <div class="btnrow centered">
         <button class="btn primary" id="photoConfirm">✓ Use this face</button>
         <button class="btn" id="photoRetake">↺ Retake</button>
       </div>
     </div>
   </div>
-  <input type="file" id="scanFile" accept="image/*" capture="environment" style="display:none">
+  <input type="file" id="scanFile" accept="image/*" capture="environment">
   <div id="scanFlash"></div>
 </div>
 

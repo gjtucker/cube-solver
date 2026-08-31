@@ -44,6 +44,20 @@
     --gold3: #a87a0a;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+  /* ---- utilities that replace what used to be style="" attributes ----
+     The CSP has no 'unsafe-inline' in style-src, so nothing in the markup may
+     carry a style attribute; these carry the initial layout and hidden state
+     instead. Elements wearing .hide are shown and hidden by toggling the class
+     (see setShown in app.js), never by writing el.style.display — !important
+     makes that contract enforceable, since it is the only !important in this
+     file and so cannot be out-specified by a later id rule. */
+  .hide { display: none !important; }
+  .btnrow.gap-above { margin-top: 12px; }
+  .btnrow.centered { justify-content: center; }
+  .btnrow.middle { align-items: center; }
+  #msg { margin-top: 10px; }
+  #scanFile { display: none; }
   button, .tab, .swatch, .netcell { touch-action: manipulation; }
   html, body { height: 100%; }
   body {
@@ -186,6 +200,12 @@
   .howto { color: var(--muted); font-size: 13px; line-height: 1.55; margin-bottom: 10px; }
   .howto b { color: var(--text); }
   .dot { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin: 0 1px; vertical-align: -1px; }
+  .dot-U { background: var(--c-U); }
+  .dot-D { background: var(--c-D); }
+  .dot-F { background: var(--c-F); }
+  .dot-B { background: var(--c-B); }
+  .dot-R { background: var(--c-R); }
+  .dot-L { background: var(--c-L); }
 
   #solution { display: none; }
   .playbar { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }

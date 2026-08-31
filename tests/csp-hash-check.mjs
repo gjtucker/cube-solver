@@ -50,15 +50,39 @@ const required = {
   "object-src 'none'": 'no plugin content',
   "connect-src 'self'": 'nowhere for injected script to exfiltrate to',
   "font-src 'self'": 'the font is vendored; nothing off-origin',
+  "style-src 'self'": 'no inline styles; the markup must stay style-attribute free',
   "worker-src 'self'": 'the 4x4 solver workers are same-origin',
 };
 for (const [d, why] of Object.entries(required)) {
   if (!csp.includes(d)) fail.push(`missing directive: ${d}  (${why})`);
 }
-// script-src must never gain an inline/eval escape
-const scriptSrc = (csp.match(/script-src ([^;]*)/) || [, ''])[1];
-for (const bad of ["'unsafe-inline'", "'unsafe-eval'", '*']) {
-  if (scriptSrc.split(/\s+/).includes(bad)) fail.push(`script-src must not contain ${bad} — found: ${scriptSrc.trim()}`);
+// neither script-src nor style-src may gain an inline/eval escape
+for (const dir of ['script-src', 'style-src']) {
+  const value = (csp.match(new RegExp(dir + ' ([^;]*)')) || [, ''])[1];
+  for (const bad of ["'unsafe-inline'", "'unsafe-eval'", '*']) {
+    if (value.split(/\s+/).includes(bad)) fail.push(`${dir} must not contain ${bad} — found: ${value.trim()}`);
+  }
+}
+
+// style-src 'self' only holds if NOTHING produces a style="" attribute — not
+// the markup, and not an HTML string that script assembles and injects. The
+// second kind is the sneaky one: it renders fine until the policy is tightened,
+// and then the styling just silently vanishes. (That is exactly how the colour
+// chips in app.js's how-to copy were caught.) So scan the shipped JS too.
+const htmlNoComments = html.replace(/<!--[\s\S]*?-->/g, '');
+for (const m of htmlNoComments.matchAll(/<[^>]*\sstyle\s*=\s*["'][^"']*["'][^>]*>/g)) {
+  fail.push(`index.html: inline style attribute — blocked by style-src 'self': ${m[0].trim().slice(0, 80)}`);
+}
+for (const f of ['app.js', 'scan.js', 'cube.js', 'cube4.js', 'tpr4.js', 'sw.js']) {
+  const src = readFileSync(join(root, f), 'utf8');
+  src.split('\n').forEach((line, i) => {
+    if (/^\s*(\/\/|\*)/.test(line)) return;               // comments may discuss it
+    // a style attribute inside an HTML string literal, e.g. `<span style="...">`
+    if (/<[a-z][^>]*\sstyle\s*=\s*\\?["'][^"'>]*\\?["']/i.test(line)) {
+      fail.push(`${f}:${i + 1}: builds HTML with a style="" attribute — it will be blocked. `
+        + `Use a class instead: ${line.trim().slice(0, 70)}`);
+    }
+  });
 }
 
 // --- 3. nothing off-origin should have crept back into the shipped files ---
