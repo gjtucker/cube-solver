@@ -29,6 +29,28 @@ good at execution, not invention.
 - **Share & copy** — share a link that reproduces your exact cube on any device; copy a solution's move sequence with one tap.
 - **No build, no backend** — plain HTML/CSS/JS served statically. Clone it and open `index.html`.
 
+## Privacy
+
+There is no backend, no analytics, no cookies and no accounts, so there is not
+much to say — but the app asks for your camera, so it should say it plainly:
+
+- **Camera frames never leave your device.** Scanning runs entirely in the page:
+  a frame goes to a canvas, the scanner reads colours out of it, and what is
+  kept is six grids of colour letters. No image is uploaded or saved anywhere.
+  The camera is requested only when you tap Scan, and the stream is stopped when
+  the scanner closes.
+- **What is stored on your device** (`localStorage`, nowhere else): your painted
+  cubes, the active tab, solve method, palette selection, playback speed and
+  position, your theme, and whether the camera preview is mirrored. No
+  identifiers, no history, nothing describing you. Clearing site data removes all
+  of it.
+- **Share links** carry the cube in the URL *fragment* (`#c=…`), which browsers
+  never send to a server, and the app drops it from the address bar as soon as it
+  has loaded.
+- **One third-party request:** the Inter webfont comes from Google Fonts, so
+  Google sees your IP and user agent on a first visit (the service worker caches
+  it afterwards). That is the only off-origin request the page makes.
+
 ## Run locally
 
 ```sh

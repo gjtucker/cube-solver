@@ -1623,6 +1623,9 @@
   }
 
   async function startScan() {
+    // never start on top of a live stream: whatever the UI path in, the camera
+    // light must not be left on by an earlier session
+    if (scan.stream) { for (const t of scan.stream.getTracks()) t.stop(); scan.stream = null; }
     scan.scanMode = mode;
     resetScanSession();
     scan.mirror = false; scan.facing = '';
@@ -2379,8 +2382,12 @@
   }
   updateScanButton();
 
-  // test hook
-  window.__cubeDebug = {
+  // Test hooks, gated behind ?debug (as types.d.ts documents). They are only
+  // reachable by same-origin script, which already has the DOM and getUserMedia
+  // anyway — but a camera app has no reason to leave "start the scanner on this
+  // MediaStream" and "read the raw captured pixels" sitting on window for every
+  // ordinary visitor.
+  if (scan.debugUI) window.__cubeDebug = {
     // test hook: animate one move at a chosen duration (rings included)
     animate(move, dur) { return playSequence([move], dur || animDuration()); },
     get mode() { return mode; },
