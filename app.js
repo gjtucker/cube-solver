@@ -741,9 +741,18 @@
       // plane for the entire turn — no blocks can ever pass through each other
       const useCut = mode === 'm' && mirrorGeo;
       const px = useCut ? CUT * S : 0, py = useCut ? -CUT * S : 0, pz = useCut ? CUT * S : 0;
-      const pivot = useCut
-        ? `translate3d(${px}px, ${py}px, ${pz}px) rotate3d(${axis[0]}, ${axis[1]}, ${axis[2]}, ${angle}deg) translate3d(${-px}px, ${-py}px, ${-pz}px) `
-        : `rotate3d(${axis[0]}, ${axis[1]}, ${axis[2]}, ${angle}deg) `;
+      const pivotAt = (deg) => useCut
+        ? `translate3d(${px}px, ${py}px, ${pz}px) rotate3d(${axis[0]}, ${axis[1]}, ${axis[2]}, ${deg}deg) translate3d(${-px}px, ${-py}px, ${-pz}px) `
+        : `rotate3d(${axis[0]}, ${axis[1]}, ${axis[2]}, ${deg}deg) `;
+      const pivot = pivotAt(angle);
+      // a half turn (X2) is shown as what it is — two quarter turns the same
+      // way with a brief hitch between them. One continuous 180° sweep runs at
+      // twice the speed of every other move and, on a symmetric layer, just
+      // reads as a flip; the hitch is what tells an onlooker "twice".
+      const legs = Math.abs(angle) === 180 ? [pivotAt(angle / 2), pivot] : [pivot];
+      const legMs = legs.length === 2 ? Math.round(dur * 0.72) : dur;
+      const hitchMs = legs.length === 2 ? Math.max(60, Math.round(dur * 0.22)) : 0;
+      const totalMs = legs.length === 2 ? legMs * 2 + hitchMs : dur;
       cubeEl.classList.add('turning');
       // direction ring: a band in the turning layer's plane, just outside the
       // cube, that sweeps along with the turn — face, layer and direction are
@@ -794,14 +803,18 @@
         cubeEl.appendChild(ring);
         void ring.offsetWidth;   // commit the resting transform before animating
       }
-      affected.forEach((el) => {
-        el.style.transition = `transform ${dur}ms cubic-bezier(0.35, 0, 0.25, 1)`;
-        el.style.transform = pivot + el.dataset.base;
-      });
-      if (ring) {
-        ring.style.transition = `transform ${dur}ms cubic-bezier(0.35, 0, 0.25, 1)`;
-        ring.style.transform = pivot + ring.dataset.base;
-      }
+      const sweep = (leg) => {
+        affected.forEach((el) => {
+          el.style.transition = `transform ${legMs}ms cubic-bezier(0.35, 0, 0.25, 1)`;
+          el.style.transform = leg + el.dataset.base;
+        });
+        if (ring) {
+          ring.style.transition = `transform ${legMs}ms cubic-bezier(0.35, 0, 0.25, 1)`;
+          ring.style.transform = leg + ring.dataset.base;
+        }
+      };
+      sweep(legs[0]);
+      if (legs.length === 2) setTimeout(() => sweep(legs[1]), legMs + hitchMs);
       setTimeout(() => {
         // a concurrent handler may have torn the playback state down (or an
         // engine hiccup thrown) — the promise must still settle, or animating
@@ -816,7 +829,7 @@
           cubeEl.classList.remove('turning');
         } catch (_) {}
         resolve();
-      }, dur + 30);
+      }, totalMs + 30);
     });
   }
 
@@ -1298,10 +1311,23 @@
     });
   }
 
+  // notation in words, for whoever is watching over the solver's shoulder:
+  // "U2" is opaque, "top layer, half turn — twice the same way" is not
+  const FACE_WORDS = { U: 'top', D: 'bottom', F: 'front', B: 'back', R: 'right', L: 'left' };
+  function moveWords(move) {
+    const f = move[0];
+    const inner = f >= 'a' && f <= 'z';   // 4×4 inner slice
+    const layer = inner ? `inner ${FACE_WORDS[f.toUpperCase()]} slice` : `${FACE_WORDS[f]} layer`;
+    const turn = move[1] === '2' ? 'half turn — twice the same way'
+      : move[1] === "'" ? 'quarter turn counter-clockwise' : 'quarter turn clockwise';
+    return `${layer}, ${turn}`;
+  }
+
   function updatePlaybackUI() {
     if (!solution) return;
     const total = solution.moves.length;
-    progText.textContent = `Move ${moveIndex} / ${total}`;
+    const next = solution.moves[moveIndex];
+    progText.textContent = `Move ${moveIndex} / ${total}` + (next ? ` · next ${next}: ${moveWords(next)}` : '');
     solution.moves.forEach((_, i) => {
       const el = document.getElementById('mv' + i);
       el.className = 'mv' + (i < moveIndex ? ' done' : i === moveIndex ? ' cur' : '');
